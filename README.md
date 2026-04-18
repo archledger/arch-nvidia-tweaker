@@ -23,6 +23,22 @@ Built with Rust + [Slint](https://slint.dev). CLI + GUI. Idempotent. State-aware
 
 ## Installation
 
+### Prerequisites
+
+`makepkg` (the PKGBUILD build driver) requires the standard Arch **`base-devel`** group — it contains `fakeroot`, `make`, `patch`, and friends. On minimal installs / containers / fresh chroots these aren't present by default. If you hit:
+
+```
+ERROR: Cannot find the fakeroot binary
+```
+
+install the group and retry:
+
+```bash
+sudo pacman -S --needed base-devel
+```
+
+(The PKGBUILD sets `options=('!debug')` so `debugedit` is NOT required.)
+
 ### via `makepkg` (recommended)
 
 ```bash
@@ -40,6 +56,15 @@ That will:
 5. Install polkit policy → `/usr/share/polkit-1/actions/`
 
 > ℹ️ The PKGBUILD lives in `packaging/` (not the project root) deliberately. `makepkg`'s `$srcdir` is always `$startdir/src`, which would otherwise collide with this project's own `src/` directory. With PKGBUILD one level down, `$srcdir` becomes `packaging/src` and the Rust source is never at risk.
+
+### Install a prebuilt package
+
+If you've already run `makepkg` once, the `.pkg.tar.zst` sits in `packaging/` and can be installed directly (no rebuild):
+
+```bash
+cd packaging
+sudo pacman -U arch-nvidia-tweaker-*-x86_64.pkg.tar.zst
+```
 
 ### build-only (no install)
 

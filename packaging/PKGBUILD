@@ -17,6 +17,12 @@ arch=('x86_64')
 url="https://github.com/archledger/arch-nvidia-tweaker"
 license=('MIT OR Apache-2.0')
 
+# Skip debug-package generation. That avoids the `debugedit` makepkg prerequisite on
+# minimal Arch installs. `fakeroot` is still required — it's part of `base-devel` and
+# is used by makepkg's package() fakeroot-wrapper regardless of options. If you hit
+# "Cannot find the fakeroot binary", run:  sudo pacman -S --needed base-devel
+options=('!debug')
+
 depends=(
     'pciutils'
     'polkit'
