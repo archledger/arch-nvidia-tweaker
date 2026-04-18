@@ -159,7 +159,7 @@ fn check_cmdline_modeset(ctx: &Context, out: &mut Vec<Finding>) {
                 Ok(false) => out.push(Finding::warn(
                     format!("nvidia-drm.modeset=1 missing — {desc}"),
                     "Required for NVIDIA on Wayland and for early KMS.",
-                    "Run `arch-nvidia-tweaker --apply-bootloader` as root.",
+                    "Run `archgpu --apply-bootloader` as root.",
                 )),
                 Err(e) => out.push(Finding::warn(
                     format!("Could not inspect bootloader cmdline ({desc})"),
@@ -266,7 +266,7 @@ fn check_suspend_services(out: &mut Vec<Finding>) {
         out.push(Finding::warn(
             "NVIDIA suspend/resume services not all enabled",
             not_enabled.join(", "),
-            "Run `arch-nvidia-tweaker --apply-power` as root.",
+            "Run `archgpu --apply-power` as root.",
         ));
     } else {
         out.push(Finding::info("NVIDIA suspend/resume services enabled", ""));
@@ -297,7 +297,7 @@ fn check_mkinitcpio_modules(ctx: &Context, out: &mut Vec<Finding>) {
             out.push(Finding::warn(
                 "NVIDIA modules not in initramfs",
                 "nvidia/nvidia_modeset/nvidia_uvm/nvidia_drm should be in MODULES for early KMS.",
-                "Run `arch-nvidia-tweaker --apply-wayland`.",
+                "Run `archgpu --apply-wayland`.",
             ));
         }
     }
@@ -328,7 +328,7 @@ fn check_multilib(ctx: &Context, out: &mut Vec<Finding>) {
         out.push(Finding::warn(
             "[multilib] repo not enabled",
             "32-bit Steam/Wine libraries (lib32-*) will be unavailable.",
-            "Run `arch-nvidia-tweaker --apply-gaming`.",
+            "Run `archgpu --apply-gaming`.",
         ));
     }
 }
@@ -406,7 +406,7 @@ fn check_gaming_tools(out: &mut Vec<Finding>) {
         out.push(Finding::warn(
             "Recommended gaming tools missing",
             format!("missing: {}", missing.join(", ")),
-            "Run `arch-nvidia-tweaker --apply-gaming`.",
+            "Run `archgpu --apply-gaming`.",
         ));
     }
 }
@@ -454,7 +454,7 @@ fn check_vm_max_map_count(out: &mut Vec<Finding>) {
         out.push(Finding::warn(
             format!("vm.max_map_count is low ({value})"),
             "Some games need ≥ 1048576 to avoid crashes/allocation errors.",
-            "Run `arch-nvidia-tweaker --apply-gaming` to write /etc/sysctl.d/99-gaming.conf.",
+            "Run `archgpu --apply-gaming` to write /etc/sysctl.d/99-gaming.conf.",
         ));
     }
 }
@@ -499,7 +499,7 @@ fn check_aur_helper(gpus: &GpuInventory, out: &mut Vec<Finding>) {
                 out.push(Finding::warn(
                     "No AUR helper and legacy NVIDIA driver required",
                     "Maxwell/Kepler/Fermi GPUs need nvidia-470xx-dkms or nvidia-390xx-dkms from AUR.",
-                    "Run `arch-nvidia-tweaker --apply-gaming` — yay-bin will be bootstrapped automatically.",
+                    "Run `archgpu --apply-gaming` — yay-bin will be bootstrapped automatically.",
                 ));
             } else {
                 out.push(Finding::info(

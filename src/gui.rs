@@ -21,7 +21,7 @@ pub fn run() -> Result<()> {
     populate_detection(&ui);
     append_log(
         &ui,
-        "Arch NVIDIA Tweaker — ready. Click Auto-Optimize for a one-click recommendation, or tune toggles manually and hit Preview/Apply.",
+        "ArchGPU — ready. Click Auto-Optimize for a one-click recommendation, or tune toggles manually and hit Preview/Apply.",
     );
 
     // ── Refresh detection ────────────────────────────────────────────────────────────────────

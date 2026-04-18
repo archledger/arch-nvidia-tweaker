@@ -9,7 +9,7 @@ use crate::core::{self, Actions, Context, ExecutionMode};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "arch-nvidia-tweaker",
+    name = "archgpu",
     version,
     about = "Automate NVIDIA/Wayland/power/gaming setup on Arch Linux",
     long_about = None,
@@ -168,7 +168,7 @@ pub fn run(args: Cli) -> Result<()> {
 }
 
 fn print_detection(ctx: &Context, form: FormFactor, gpus: &GpuInventory) {
-    println!("Arch NVIDIA Tweaker — system detection");
+    println!("ArchGPU — system detection");
     println!("  Form factor          : {form:?}");
     println!(
         "  DMI chassis path     : {}",
@@ -259,7 +259,7 @@ fn print_detection(ctx: &Context, form: FormFactor, gpus: &GpuInventory) {
 }
 
 fn print_findings(findings: &[Finding]) {
-    println!("Arch NVIDIA Tweaker — diagnostics");
+    println!("ArchGPU — diagnostics");
     if findings.is_empty() {
         println!("  (no findings)");
         return;

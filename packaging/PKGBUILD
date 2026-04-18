@@ -1,7 +1,7 @@
-# Maintainer: arch-nvidia-tweaker contributors
+# Maintainer: archgpu contributors
 #
 # Build this from the `packaging/` subdirectory:
-#   cd /path/to/arch-nvidia-tweaker/packaging
+#   cd /path/to/archgpu/packaging
 #   makepkg -si
 #
 # makepkg's $srcdir is always "$startdir/src" — having PKGBUILD one level down from
@@ -9,12 +9,12 @@
 # with the Rust project's own `src/` directory. (The earlier layout with PKGBUILD at
 # the project root was destructive: `makepkg --cleanbuild` wiped the project's src/.)
 
-pkgname=arch-nvidia-tweaker
+pkgname=archgpu
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Automated NVIDIA/Wayland/power/gaming configurator for Arch Linux (Slint GUI + clap CLI)"
 arch=('x86_64')
-url="https://github.com/archledger/arch-nvidia-tweaker"
+url="https://github.com/archledger/archgpu"
 license=('MIT OR Apache-2.0')
 
 # Skip debug-package generation. That avoids the `debugedit` makepkg prerequisite on

@@ -4,10 +4,10 @@
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <policyconfig>
 
-  <vendor>Arch NVIDIA Tweaker</vendor>
-  <vendor_url>https://github.com/archledger/arch-nvidia-tweaker</vendor_url>
+  <vendor>ArchGPU</vendor>
+  <vendor_url>https://github.com/archledger/archgpu</vendor_url>
 
-  <action id="com.github.arch-nvidia-tweaker">
+  <action id="com.github.archgpu">
     <description>Configure NVIDIA, Wayland, power, and gaming settings</description>
     <description xml:lang="en_GB">Configure NVIDIA, Wayland, power, and gaming settings</description>
     <message>Authentication is required to modify /etc/ and run pacman.</message>
@@ -22,7 +22,7 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
 
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/arch-nvidia-tweaker</annotate>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/archgpu</annotate>
 
     <!-- Preserve the graphical session env when pkexec drops into root. Without this,
          pkexec sanitizes DISPLAY/WAYLAND_DISPLAY/XAUTHORITY/XDG_RUNTIME_DIR and the

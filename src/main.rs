@@ -16,7 +16,7 @@ fn main() -> Result<()> {
     if args.needs_root() && !is_root() {
         eprintln!("This operation requires root privileges.");
         eprintln!(
-            "Re-run with `sudo arch-nvidia-tweaker ...` or `pkexec arch-nvidia-tweaker ...`."
+            "Re-run with `sudo archgpu ...` or `pkexec archgpu ...`."
         );
         std::process::exit(1);
     }

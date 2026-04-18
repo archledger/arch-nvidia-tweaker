@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=ArchGPU
+GenericName=Graphics & Gaming Configurator
+Comment=Multi-vendor GPU, Wayland, bootloader, and gaming stack configurator for Arch Linux
+Exec=pkexec /usr/bin/archgpu
+Icon=preferences-system
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=nvidia;amd;intel;wayland;gaming;vulkan;gpu;optimus;prime;mkinitcpio;pacman;bootloader;grub;systemd-boot;limine;uki;
+StartupNotify=true
+X-GNOME-UsesNotifications=true

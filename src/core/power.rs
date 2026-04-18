@@ -11,7 +11,7 @@ const MODPROBE_FILE: &str = "zzz-nvidia-tweaks-auto.conf";
 const NOUVEAU_BLACKLIST_FILE: &str = "blacklist-nouveau.conf";
 
 const NOUVEAU_BLACKLIST_CONTENT: &str = "\
-# Managed by arch-nvidia-tweaker — prevents nouveau from loading while the proprietary (or
+# Managed by archgpu — prevents nouveau from loading while the proprietary (or
 # open GSP) NVIDIA kernel modules are active. Remove this file to allow nouveau again.
 blacklist nouveau
 options nouveau modeset=0
@@ -82,7 +82,7 @@ pub fn apply(ctx: &Context, form: FormFactor) -> Result<Vec<ChangeReport>> {
 
 pub fn modprobe_content(form: FormFactor) -> String {
     let mut s = String::new();
-    s.push_str("# Managed by arch-nvidia-tweaker — do not edit by hand.\n");
+    s.push_str("# Managed by archgpu — do not edit by hand.\n");
     s.push_str("# Required on all hosts to avoid Wayland wake artifacts.\n");
     s.push_str("options nvidia NVreg_UseKernelSuspendNotifiers=1\n");
     if form == FormFactor::Laptop {

@@ -210,7 +210,7 @@ pub fn ensure_yay(ctx: &Context, progress: &mut dyn FnMut(&str)) -> Result<Chang
         anyhow::bail!("pacman -S git base-devel exited with {status}");
     }
 
-    let tmpdir = PathBuf::from(format!("/tmp/arch-nvidia-tweaker-yay-bootstrap-{user}"));
+    let tmpdir = PathBuf::from(format!("/tmp/archgpu-yay-bootstrap-{user}"));
     let _ = std::fs::remove_dir_all(&tmpdir);
     let status = Command::new("install")
         .args(["-d", "-m", "0755", "-o", &user, "-g", &user])

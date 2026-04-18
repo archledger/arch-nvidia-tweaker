@@ -18,7 +18,7 @@ const MKINITCPIO_DROPIN_FILE: &str = "nvidia-modules.conf";
 // OLDER version of this tool and had those exports here will have the file
 // overwritten with this modernized comment-only version on the next --apply-wayland.
 const PROFILE_D_CONTENT: &str = "\
-# Managed by arch-nvidia-tweaker — do not edit by hand.
+# Managed by archgpu — do not edit by hand.
 #
 # Historical note: this file used to export
 #   GBM_BACKEND=nvidia-drm
@@ -48,7 +48,7 @@ const PROFILE_D_CONTENT: &str = "\
 //      Adding nvidia modules via MODULES is the correct path for early KMS without
 //      disturbing the hook chain.
 const MKINITCPIO_DROPIN_CONTENT: &str = "\
-# Managed by arch-nvidia-tweaker — do not edit by hand.
+# Managed by archgpu — do not edit by hand.
 MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)
 ";
 

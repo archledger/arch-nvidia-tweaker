@@ -11,7 +11,7 @@ use crate::utils::process::run_streaming;
 
 const SYSCTL_DROPIN_FILE: &str = "99-gaming.conf";
 const SYSCTL_CONTENT: &str = "\
-# Managed by arch-nvidia-tweaker — raises the mmap ceiling for modern games
+# Managed by archgpu — raises the mmap ceiling for modern games
 # (Star Citizen, Hogwarts Legacy, Apex, etc.).
 vm.max_map_count = 1048576
 ";

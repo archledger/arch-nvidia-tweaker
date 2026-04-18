@@ -5,9 +5,9 @@ use crate::core::gpu::GpuInventory;
 use crate::core::Context;
 use crate::utils::fs_helper::{write_dropin, ChangeReport};
 
-const XORG_DROPIN_FILE: &str = "10-arch-nvidia-tweaker-prime.conf";
+const XORG_DROPIN_FILE: &str = "10-archgpu-prime.conf";
 
-const XORG_CONTENT: &str = r#"# Managed by arch-nvidia-tweaker — PRIME render offload (hybrid graphics).
+const XORG_CONTENT: &str = r#"# Managed by archgpu — PRIME render offload (hybrid graphics).
 # Only consulted under Xorg sessions. Wayland ignores this file.
 #
 # `prime-run` from the `nvidia-prime` package wraps this by setting:

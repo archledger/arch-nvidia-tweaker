@@ -1,10 +1,10 @@
 [package]
-name = "arch-nvidia-tweaker"
+name = "archgpu"
 version = "0.1.0"
 edition = "2021"
 description = "Arch Linux post-install configurator for NVIDIA, Wayland, hybrid-graphics power, and gaming"
 license = "MIT OR Apache-2.0"
-default-run = "arch-nvidia-tweaker"
+default-run = "archgpu"
 
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
