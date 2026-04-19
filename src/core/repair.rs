@@ -513,13 +513,23 @@ mod tests {
         let target = ctx.paths.xorg_d.join(LEGACY_PRIME_DROPIN_FILE);
         std::fs::write(&target, "LEGACY-MARKER\n").unwrap();
 
-        // Scan-and-apply: we want DeleteStalePrimeDropin to fire. For this test the
-        // other repair rules must be inert — no pacman package detection (installed set
-        // empty when pacman isn't available in the sandbox) and /sys/module/nvidia is
-        // absent, but nvidia-*-dkms is also absent → no ForceDkmsRebuild. So the only
-        // report should be the delete.
-        let reports =
-            apply(&ctx, &desktop_hybrid(), FormFactor::Desktop, false, &mut |_| {}).unwrap();
+        // Isolate the delete path from the rest of the scanner. On a live Arch dev host
+        // `apply()` calls `scan()` which queries REAL pacman (`pacman -Qq`) and the REAL
+        // `/sys/module/nvidia` tree — meaning:
+        //   - if nvidia-open-dkms is installed on the host AND the test's tempdir-rooted
+        //     sys_module has no `nvidia/` dir, the scanner fires `ForceDkmsRebuild`, which
+        //     runs real `dkms autoinstall` under `makepkg --check` (non-root, fails with
+        //     exit 1, panics the test)
+        //   - if `nvidia-prime` happens to be installed, `RemoveNvidiaPrimeOnDesktop`
+        //     fires and runs real `pacman -Rns` (also fails non-root)
+        // Neither of those are what this test is about. Seed `/sys/module/nvidia` to
+        // suppress the DKMS rule, and pass an empty GpuInventory so `is_hybrid == false`
+        // suppresses the nvidia-prime rule. What remains is the legacy-drop-in deletion,
+        // which is the only thing this test covers.
+        std::fs::create_dir_all(ctx.paths.sys_module.join("nvidia")).unwrap();
+        let no_gpus = GpuInventory { gpus: vec![] };
+
+        let reports = apply(&ctx, &no_gpus, FormFactor::Desktop, false, &mut |_| {}).unwrap();
 
         let delete = reports
             .iter()

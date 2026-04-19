@@ -164,13 +164,29 @@ mod tests {
         let dir = tempdir().unwrap();
         let ctx = Context::rooted_for_test(dir.path(), ExecutionMode::Apply);
         let r = apply(&ctx, &hybrid_inv(), FormFactor::Laptop).unwrap();
-        // write_dropin returns Applied (new file) or AlreadyApplied (if nvidia-utils ships one).
-        // In a tempdir there's no nvidia-utils config, so we expect Applied.
-        assert!(matches!(r, ChangeReport::Applied { .. }));
-        assert!(dir
-            .path()
-            .join("etc/X11/xorg.conf.d/10-archgpu-prime.conf")
-            .exists());
+        // The shipped-config probe hits the REAL `/usr/share/X11/xorg.conf.d/10-nvidia-drm-
+        // outputclass.conf` (not ctx-rooted — that path is set by the nvidia-utils package).
+        // On a dev host with nvidia-utils installed, prime::apply correctly returns
+        // AlreadyApplied with "already shipped". On a clean sandbox without nvidia-utils it
+        // returns Applied. Both are valid for a laptop hybrid; the thing this test MUST
+        // reject is the Phase-19 desktop-skip branch.
+        match r {
+            ChangeReport::Applied { .. } => {
+                assert!(
+                    dir.path()
+                        .join("etc/X11/xorg.conf.d/10-archgpu-prime.conf")
+                        .exists(),
+                    "Applied report should have created the drop-in"
+                );
+            }
+            ChangeReport::AlreadyApplied { detail } => {
+                assert!(
+                    detail.contains("already shipped"),
+                    "Laptop + hybrid must NOT take the Phase-19 desktop-skip branch; got: {detail}"
+                );
+            }
+            other => panic!("unexpected report: {other:?}"),
+        }
     }
 
     #[test]
