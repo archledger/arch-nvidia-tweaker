@@ -76,6 +76,88 @@ pub fn run() -> Result<()> {
         });
     }
 
+    // ── Run Repair Now (UI overhaul: Attention card dedicated button) ────────────────────────
+    // Fires ONLY the repair pass, bypassing the opt-* toggles. Intended for the common
+    // "my system is broken, just fix it" case. Honors the Dry run toggle so users can still
+    // preview. After the run, populate_detection re-polls state and the Attention card
+    // dismisses itself when the scanner returns empty.
+    {
+        let weak = ui.as_weak();
+        ui.on_run_repair(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let mode = if ui.get_opt_dry_run() {
+                ExecutionMode::DryRun
+            } else {
+                ExecutionMode::Apply
+            };
+            ui.set_is_working(true);
+            append_log(
+                &ui,
+                &format!(
+                    "--- Running repair ({}) ---",
+                    if mode.is_dry_run() { "dry-run" } else { "apply" }
+                ),
+            );
+
+            let thread_weak = ui.as_weak();
+            thread::spawn(move || {
+                let ctx = Context::production(mode);
+                let form = hardware::get_chassis_type(&ctx.paths.dmi_chassis)
+                    .unwrap_or(FormFactor::Unknown);
+                let gpus = GpuInventory::detect().unwrap_or_default();
+
+                let progress_weak = thread_weak.clone();
+                let mut progress = move |line: &str| {
+                    let weak = progress_weak.clone();
+                    let line = line.to_string();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = weak.upgrade() {
+                            append_log(&ui, &line);
+                        }
+                    });
+                };
+
+                let actions = Actions {
+                    repair: true,
+                    ..Actions::default()
+                };
+                // Repair fires pacman -Rns + dkms autoinstall — must be non-interactive
+                // under a GUI that has no TTY for [Y/n] prompts.
+                let result = core::run_actions(&ctx, form, &gpus, actions, true, &mut progress);
+
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = thread_weak.upgrade() {
+                        match result {
+                            Ok(reports) => {
+                                if reports.is_empty() {
+                                    append_log(
+                                        &ui,
+                                        "No repairs needed — system is already clean.",
+                                    );
+                                } else {
+                                    for (section, r) in &reports {
+                                        append_log(&ui, &format!("[{section}] {r}"));
+                                    }
+                                    append_log(
+                                        &ui,
+                                        &format!(
+                                            "Repair complete ({} action{}).",
+                                            reports.len(),
+                                            if reports.len() == 1 { "" } else { "s" }
+                                        ),
+                                    );
+                                }
+                            }
+                            Err(e) => append_log(&ui, &format!("ERROR: {e:#}")),
+                        }
+                        populate_detection(&ui);
+                        ui.set_is_working(false);
+                    }
+                });
+            });
+        });
+    }
+
     // ── Diagnostics scan ─────────────────────────────────────────────────────────────────────
     {
         let weak = ui.as_weak();
@@ -280,14 +362,20 @@ fn apply_tweak_states(ui: &MainWindow, ctx: &Context, gpus: &GpuInventory, form:
     ui.set_state_gaming_applied(g.is_active());
     ui.set_state_gaming_pending_reboot(g.is_pending_reboot());
 
-    // Phase 20: repair tweak — Active iff scanner finds nothing to heal. The GUI
-    // renders this as a green "✓ Active" badge when clean, or a regular Switch with
-    // the detected actions previewed in the subtitle when dirty.
+    // Phase 20 + UI overhaul: repair tweak — Active iff scanner finds nothing to heal.
+    // The UI renders a green health pill in the hero when clean, a red-amber Attention
+    // card below Hardware when not. `repair_summaries` feeds the bullets inside that card
+    // so users see the specific issues without having to press Diagnose first.
     let rep = repair::check_state(ctx, gpus, form);
     ui.set_state_repair_applied(rep.is_active());
-    // Surface the detected action count in the subtitle — empty on clean systems.
-    let action_count = repair::scan(ctx, gpus, form).len();
-    ui.set_repair_action_count(action_count as i32);
+    let actions = repair::scan(ctx, gpus, form);
+    ui.set_repair_action_count(actions.len() as i32);
+    let summaries: Vec<SharedString> = actions
+        .iter()
+        .map(|a| SharedString::from(a.human_summary()))
+        .collect();
+    let summary_model: Rc<VecModel<SharedString>> = Rc::new(VecModel::from(summaries));
+    ui.set_repair_summaries(ModelRc::from(summary_model));
 }
 
 /// Phase 15/16: poll the gaming + wayland sanitation scanners and push each warning as a

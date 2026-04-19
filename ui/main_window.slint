@@ -239,13 +239,25 @@ export component MainWindow inherits Window {
     in-out property <bool> state-gaming-applied: false;
     in-out property <bool> state-gaming-pending-reboot: false;
 
-    // Phase 20: self-heal scanner status + count.
+    // Phase 20 + UI overhaul: self-heal scanner status, count, and per-action summaries.
     //   state-repair-applied       → green "✓ Active" badge (scanner found nothing to heal)
     //   repair-action-count        → # of RepairActions currently detected; drives the
-    //                                TweakRow subtitle so users see "3 stale artifacts
-    //                                detected" without pressing Diagnose first.
+    //                                hero status pill + Attention card visibility.
+    //   repair-summaries           → one human-readable line per detected RepairAction
+    //                                (sourced from RepairAction::human_summary), rendered
+    //                                as bullets inside the Attention card.
     in-out property <bool> state-repair-applied: true;
     in-out property <int> repair-action-count: 0;
+    in-out property <[string]> repair-summaries: [];
+
+    // UI overhaul: computed count of toggles currently on. Drives the primary Apply
+    // button's label ("Apply 3 actions") and disabled-state (disabled when 0).
+    in-out property <int> selected-action-count:
+        (root.opt-wayland ? 1 : 0)
+        + (root.opt-bootloader ? 1 : 0)
+        + (root.opt-power ? 1 : 0)
+        + (root.opt-gaming ? 1 : 0)
+        + (root.opt-repair ? 1 : 0);
 
     // ── Detection text (read from Rust) ────────────────────────────────────────────────────
     in-out property <string> chassis-text: "Detecting...";
@@ -273,6 +285,10 @@ export component MainWindow inherits Window {
     callback detect();
     callback diagnose();
     callback auto-optimize();
+    // UI overhaul: dedicated one-click repair path fired by the Attention card's
+    // "Run Repair Now" button. Bypasses opt-* toggles — runs ONLY the repair pass,
+    // then re-polls detection so the Attention card dismisses itself.
+    callback run-repair();
 
     // ── Console auto-scroll plumbing ───────────────────────────────────────────────────────
     // Kept as a public function for Rust to invoke belt-and-suspenders style after every
@@ -301,11 +317,29 @@ export component MainWindow inherits Window {
                 Card {
                     fill: #1F2A3A;
 
-                    Text {
-                        text: "ArchGPU";
-                        color: #FFFFFF;
-                        font-size: 26px;
-                        font-weight: 700;
+                    // Title row: product name on the left, health-status pill on the right.
+                    // The pill is the at-a-glance signal — green when the repair scanner
+                    // found nothing, amber with a count when it did. Users should never
+                    // have to press Diagnose just to learn "is my system OK".
+                    HorizontalLayout {
+                        spacing: 12px;
+                        alignment: stretch;
+
+                        Text {
+                            text: "ArchGPU";
+                            color: #FFFFFF;
+                            font-size: 26px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                        StateBadge {
+                            text: root.repair-action-count == 0
+                                ? "✓ System healthy"
+                                : "⚠ " + root.repair-action-count + " issue" + (root.repair-action-count == 1 ? "" : "s") + " detected";
+                            fill: root.repair-action-count == 0 ? #2E5C3A : #6A2E2E;
+                            text-color: root.repair-action-count == 0 ? #C8F5D4 : #F5C8C8;
+                        }
                     }
                     Text {
                         text: "Detect your hardware, tune NVIDIA / Wayland / gaming, and install the right packages — safely.";
@@ -362,6 +396,67 @@ export component MainWindow inherits Window {
                         color: root.has-nvidia ? #7CC47C : #E8944B;
                         font-weight: 700;
                         font-size: 12px;
+                    }
+                }
+
+                // ── ATTENTION: self-heal needed (Phase 20 / UI overhaul) ───────────────────
+                // Only visible when the repair scanner detected legacy archgpu artifacts on
+                // this host (stale PRIME drop-in, misplaced nvidia-prime, broken DKMS module).
+                // Red-amber styled so it reads as "fix before doing anything else." The
+                // dedicated Run Repair Now button bypasses the regular apply flow — single
+                // click, fires run-repair(), re-detects, and the card dismisses itself when
+                // the scanner returns empty on the next populate.
+                if root.repair-action-count > 0 : Rectangle {
+                    background: #3A1F1F;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: #9A3030;
+
+                    VerticalLayout {
+                        padding: 18px;
+                        spacing: 10px;
+
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+                            Text {
+                                text: "⚠";
+                                color: #FF8E7A;
+                                font-size: 20px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.repair-action-count + " legacy artifact" + (root.repair-action-count == 1 ? "" : "s") + " from a previous ArchGPU version";
+                                color: #FF9B85;
+                                font-size: 15px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Text {
+                            text: "Older versions of ArchGPU left state on this host that can misroute display on hybrid desktops or keep the NVIDIA GPU driverless. Run repair before re-applying other tweaks. Every action is backed up under /var/backups/archgpu/ and idempotent.";
+                            color: #F5C4B8;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+
+                        Rectangle { height: 2px; background: transparent; }
+
+                        for summary in root.repair-summaries : Text {
+                            text: "•  " + summary;
+                            color: #F5DFD8;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+
+                        Rectangle { height: 6px; background: transparent; }
+
+                        HeroButton {
+                            text: "🛠  Run Repair Now";
+                            enabled: !root.is-working;
+                            clicked => { root.run-repair(); }
+                        }
                     }
                 }
 
@@ -465,22 +560,10 @@ export component MainWindow inherits Window {
                         incompatible: false;
                     }
 
-                    Rectangle { height: 1px; background: #333333; }
-
-                    // Phase 20: self-heal pass for hosts upgraded from pre-Phase-18/19 archgpu.
-                    TweakRow {
-                        title: "Repair legacy artifacts (self-heal upgrade)";
-                        subtitle: root.repair-action-count > 0
-                            ? (root.repair-action-count == 1
-                                ? "1 stale artifact from a previous ArchGPU version detected. Apply to delete legacy PRIME drop-ins on desktop hybrids, remove misplaced nvidia-prime, and force DKMS rebuild when the module failed to build. Idempotent and backed up."
-                                : "Multiple stale artifacts from a previous ArchGPU version detected. Apply to delete legacy PRIME drop-ins on desktop hybrids, remove misplaced nvidia-prime, and force DKMS rebuild when the module failed to build. Idempotent and backed up.")
-                            : "Deletes legacy PRIME drop-ins on desktop hybrids, removes misplaced nvidia-prime, forces DKMS rebuild when the NVIDIA module silently failed to build. Idempotent on healthy hosts.";
-                        checked <=> root.opt-repair;
-                        enabled: !root.is-working;
-                        applied: root.state-repair-applied;
-                        pending_reboot: false;
-                        incompatible: false;
-                    }
+                    // Repair is elevated out of the Tweaks list — it's remediation, not
+                    // tuning. See the Attention card above the Tweaks card for the dedicated
+                    // UI surface. opt-repair is still set by Auto-Optimize so clicking Apply
+                    // after Auto-Optimize runs repair alongside other recommended actions.
                 }
 
                 // ── OPTIONS card ───────────────────────────────────────────────────────────
@@ -530,9 +613,17 @@ export component MainWindow inherits Window {
                     }
                     Rectangle { horizontal-stretch: 1; background: transparent; }
                     SecondaryButton {
-                        text: root.opt-dry-run ? "Preview" : "Apply Selected";
-                        primary: true;
-                        enabled: !root.is-working;
+                        // Button label reflects exactly what will happen: "Preview N
+                        // actions" in dry-run, "Apply N actions" otherwise. Grayed out
+                        // when zero toggles are active so users don't wonder why nothing
+                        // happened when they clicked it.
+                        text: root.selected-action-count == 0
+                            ? "No actions selected"
+                            : (root.opt-dry-run
+                                ? "Preview " + root.selected-action-count + " action" + (root.selected-action-count == 1 ? "" : "s")
+                                : "Apply " + root.selected-action-count + " action" + (root.selected-action-count == 1 ? "" : "s"));
+                        primary: root.selected-action-count > 0;
+                        enabled: !root.is-working && root.selected-action-count > 0;
                         clicked => { root.apply(); }
                     }
                 }
@@ -587,9 +678,14 @@ export component MainWindow inherits Window {
 
                     VerticalLayout {
                         Text {
-                            text: root.log-text;
-                            color: #DCDCDC;
-                            font-family: "monospace";
+                            // Dim placeholder while the log is empty so the console panel
+                            // doesn't look broken on first open. Real output replaces it as
+                            // soon as Rust calls append_log.
+                            text: root.log-text == ""
+                                ? "Output will appear here when you run Diagnose or Apply — pacman, mkinitcpio, grub-mkconfig, bootctl, makepkg, yay, dkms streams land live."
+                                : root.log-text;
+                            color: root.log-text == "" ? #5A5A5A : #DCDCDC;
+                            font-family: root.log-text == "" ? "" : "monospace";
                             font-size: 12px;
                             wrap: word-wrap;
                             horizontal-alignment: left;
