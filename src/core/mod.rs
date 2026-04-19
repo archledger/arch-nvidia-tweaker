@@ -7,6 +7,7 @@ pub mod gpu;
 pub mod hardware;
 pub mod power;
 pub mod prime;
+pub mod repair;
 pub mod state;
 pub mod wayland;
 
@@ -143,6 +144,11 @@ pub struct Actions {
     pub bootloader: bool,
     pub power: bool,
     pub gaming: bool,
+    /// Phase 20: self-heal pass. Deletes legacy PRIME drop-ins on desktop hybrids,
+    /// removes `nvidia-prime` on desktop hybrids, forces DKMS rebuild when the module
+    /// failed to build. Runs BEFORE the other actions so their state probes see a
+    /// clean system. Idempotent — on a healthy host it's a no-op.
+    pub repair: bool,
 }
 
 impl Actions {
@@ -152,11 +158,12 @@ impl Actions {
             bootloader: true,
             power: true,
             gaming: true,
+            repair: true,
         }
     }
 
     pub fn any(&self) -> bool {
-        self.wayland || self.bootloader || self.power || self.gaming
+        self.wayland || self.bootloader || self.power || self.gaming || self.repair
     }
 }
 
@@ -173,6 +180,15 @@ pub fn run_actions(
 ) -> Result<Vec<(&'static str, ChangeReport)>> {
     let mut out = Vec::new();
     let has_nv = gpus.has_nvidia();
+
+    // Phase 20: run repair FIRST. Every subsequent action's `check_state` probe is
+    // invalidated if a pre-Phase-19 PRIME drop-in or a broken DKMS module is still on
+    // disk — clean those up before the rest of the pipeline evaluates state.
+    if actions.repair {
+        for r in repair::apply(ctx, gpus, form, assume_yes, progress)? {
+            out.push(("repair", r));
+        }
+    }
 
     if actions.wayland {
         if has_nv {

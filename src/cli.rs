@@ -43,6 +43,12 @@ pub struct Cli {
     #[arg(long)]
     pub apply_gaming: bool,
 
+    /// Self-heal pass (Phase 20): deletes legacy PRIME drop-ins on desktop hybrids,
+    /// removes `nvidia-prime` where it shouldn't be, forces DKMS rebuild when the
+    /// NVIDIA module silently failed to build. Idempotent on healthy hosts.
+    #[arg(long)]
+    pub apply_repair: bool,
+
     /// Run every apply action
     #[arg(long)]
     pub apply_all: bool,
@@ -66,6 +72,7 @@ impl Cli {
             || self.apply_bootloader
             || self.apply_power
             || self.apply_gaming
+            || self.apply_repair
             || self.apply_all
     }
 
@@ -94,6 +101,7 @@ impl Cli {
             bootloader: self.apply_bootloader,
             power: self.apply_power,
             gaming: self.apply_gaming,
+            repair: self.apply_repair,
         }
     }
 }

@@ -61,7 +61,7 @@ impl Finding {
     }
 }
 
-pub fn scan(ctx: &Context, gpus: &GpuInventory, _form: FormFactor) -> Vec<Finding> {
+pub fn scan(ctx: &Context, gpus: &GpuInventory, form: FormFactor) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     if gpus.gpus.is_empty() {
@@ -142,6 +142,20 @@ pub fn scan(ctx: &Context, gpus: &GpuInventory, _form: FormFactor) -> Vec<Findin
     }
     for w in crate::core::wayland::sanitation_warnings(ctx) {
         findings.push(Finding::warn(w.title(), w.detail(), w.remediation()));
+    }
+
+    // Phase 20: surface every RepairAction the self-heal scanner detected. These are
+    // legacy artifacts from older archgpu versions that a state-aware probe (like
+    // `wayland::check_state`) can't distinguish from intentional user config — only
+    // knowledge of what archgpu USED to write on the current topology can. Severity is
+    // Warning because the system keeps running, but fix is load-bearing (broken display
+    // routing or driverless GPU).
+    for action in crate::core::repair::scan(ctx, gpus, form) {
+        findings.push(Finding::warn(
+            "Legacy archgpu artifact detected",
+            action.human_summary(),
+            "Run `archgpu --apply-repair` or enable the Repair tweak in the GUI. Idempotent; backups land in /var/backups/archgpu/.",
+        ));
     }
 
     findings

@@ -216,6 +216,7 @@ export component MainWindow inherits Window {
     in-out property <bool> opt-bootloader: false;
     in-out property <bool> opt-power: false;
     in-out property <bool> opt-gaming: false;
+    in-out property <bool> opt-repair: false;
     in-out property <bool> opt-dry-run: true;
     in-out property <bool> opt-assume-yes: true;
 
@@ -237,6 +238,14 @@ export component MainWindow inherits Window {
     in-out property <bool> state-power-incompatible: false;
     in-out property <bool> state-gaming-applied: false;
     in-out property <bool> state-gaming-pending-reboot: false;
+
+    // Phase 20: self-heal scanner status + count.
+    //   state-repair-applied       → green "✓ Active" badge (scanner found nothing to heal)
+    //   repair-action-count        → # of RepairActions currently detected; drives the
+    //                                TweakRow subtitle so users see "3 stale artifacts
+    //                                detected" without pressing Diagnose first.
+    in-out property <bool> state-repair-applied: true;
+    in-out property <int> repair-action-count: 0;
 
     // ── Detection text (read from Rust) ────────────────────────────────────────────────────
     in-out property <string> chassis-text: "Detecting...";
@@ -453,6 +462,23 @@ export component MainWindow inherits Window {
                         enabled: !root.is-working;
                         applied: root.state-gaming-applied;
                         pending_reboot: root.state-gaming-pending-reboot;
+                        incompatible: false;
+                    }
+
+                    Rectangle { height: 1px; background: #333333; }
+
+                    // Phase 20: self-heal pass for hosts upgraded from pre-Phase-18/19 archgpu.
+                    TweakRow {
+                        title: "Repair legacy artifacts (self-heal upgrade)";
+                        subtitle: root.repair-action-count > 0
+                            ? (root.repair-action-count == 1
+                                ? "1 stale artifact from a previous ArchGPU version detected. Apply to delete legacy PRIME drop-ins on desktop hybrids, remove misplaced nvidia-prime, and force DKMS rebuild when the module failed to build. Idempotent and backed up."
+                                : "Multiple stale artifacts from a previous ArchGPU version detected. Apply to delete legacy PRIME drop-ins on desktop hybrids, remove misplaced nvidia-prime, and force DKMS rebuild when the module failed to build. Idempotent and backed up.")
+                            : "Deletes legacy PRIME drop-ins on desktop hybrids, removes misplaced nvidia-prime, forces DKMS rebuild when the NVIDIA module silently failed to build. Idempotent on healthy hosts.";
+                        checked <=> root.opt-repair;
+                        enabled: !root.is-working;
+                        applied: root.state-repair-applied;
+                        pending_reboot: false;
                         incompatible: false;
                     }
                 }

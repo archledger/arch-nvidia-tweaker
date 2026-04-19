@@ -10,6 +10,7 @@ use crate::core::gaming;
 use crate::core::gpu::{GpuInventory, PackageSource};
 use crate::core::hardware::{self, FormFactor};
 use crate::core::power;
+use crate::core::repair;
 use crate::core::wayland;
 use crate::core::{self, Actions, Context, ExecutionMode, SystemPaths};
 
@@ -49,6 +50,7 @@ pub fn run() -> Result<()> {
             ui.set_opt_bootloader(rec.bootloader);
             ui.set_opt_power(rec.power);
             ui.set_opt_gaming(rec.gaming);
+            ui.set_opt_repair(rec.repair);
 
             let names = auto::recommended_names(rec);
             if names.is_empty() {
@@ -132,6 +134,7 @@ pub fn run() -> Result<()> {
                 bootloader: ui.get_opt_bootloader(),
                 power: ui.get_opt_power(),
                 gaming: ui.get_opt_gaming(),
+                repair: ui.get_opt_repair(),
             };
             if !actions.any() {
                 append_log(&ui, "No actions selected — nothing to do.");
@@ -249,6 +252,7 @@ fn populate_detection(ui: &MainWindow) {
     ui.set_opt_bootloader(recommended.bootloader);
     ui.set_opt_power(recommended.power);
     ui.set_opt_gaming(recommended.gaming);
+    ui.set_opt_repair(recommended.repair);
 }
 
 fn apply_tweak_states(ui: &MainWindow, ctx: &Context, gpus: &GpuInventory, form: FormFactor) {
@@ -275,6 +279,15 @@ fn apply_tweak_states(ui: &MainWindow, ctx: &Context, gpus: &GpuInventory, form:
     let g = gaming::check_state(ctx, gpus, form);
     ui.set_state_gaming_applied(g.is_active());
     ui.set_state_gaming_pending_reboot(g.is_pending_reboot());
+
+    // Phase 20: repair tweak — Active iff scanner finds nothing to heal. The GUI
+    // renders this as a green "✓ Active" badge when clean, or a regular Switch with
+    // the detected actions previewed in the subtitle when dirty.
+    let rep = repair::check_state(ctx, gpus, form);
+    ui.set_state_repair_applied(rep.is_active());
+    // Surface the detected action count in the subtitle — empty on clean systems.
+    let action_count = repair::scan(ctx, gpus, form).len();
+    ui.set_repair_action_count(action_count as i32);
 }
 
 /// Phase 15/16: poll the gaming + wayland sanitation scanners and push each warning as a

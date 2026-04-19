@@ -1,7 +1,7 @@
 use crate::core::gaming;
 use crate::core::gpu::GpuInventory;
 use crate::core::hardware::FormFactor;
-use crate::core::{bootloader, power, wayland, Actions, Context};
+use crate::core::{bootloader, power, repair, wayland, Actions, Context};
 
 /// Determine the best default action set for the detected hardware AND current system state.
 ///
@@ -29,12 +29,19 @@ pub fn recommend(ctx: &Context, form: FormFactor, gpus: &GpuInventory) -> Action
         bootloader: bootloader_applicable && bootloader::check_state(ctx, gpus).is_unapplied(),
         power: power_applicable && power::check_state(ctx, gpus).is_unapplied(),
         gaming: gaming_applicable && gaming::check_state(ctx, gpus, form).is_unapplied(),
+        // Phase 20: Auto-Optimize recommends repair whenever the scanner finds stale
+        // artifacts. Universally applicable, so the only gate is state.
+        repair: repair::check_state(ctx, gpus, form).is_unapplied(),
     }
 }
 
 /// Returns the subset of action names the recommend() just turned ON, for UI log output.
 pub fn recommended_names(actions: Actions) -> Vec<&'static str> {
     let mut out = Vec::new();
+    // Repair first — matches run_actions dispatch order and flags the urgent case visibly.
+    if actions.repair {
+        out.push("repair");
+    }
     if actions.wayland {
         out.push("wayland");
     }
@@ -206,7 +213,22 @@ mod tests {
             bootloader: false,
             power: true,
             gaming: false,
+            repair: false,
         };
         assert_eq!(recommended_names(actions), vec!["wayland", "power"]);
+    }
+
+    #[test]
+    fn recommended_names_puts_repair_first() {
+        // Phase 20: when repair is flagged alongside other actions, it appears first —
+        // this maps to run_actions dispatch order and communicates urgency to the user.
+        let actions = Actions {
+            wayland: true,
+            bootloader: false,
+            power: false,
+            gaming: true,
+            repair: true,
+        };
+        assert_eq!(recommended_names(actions), vec!["repair", "wayland", "gaming"]);
     }
 }
