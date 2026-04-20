@@ -158,7 +158,139 @@ pub fn scan(ctx: &Context, gpus: &GpuInventory, form: FormFactor) -> Vec<Finding
         ));
     }
 
+    // Phase 22: smart diagnostics — root-cause analysis for "why is my system in
+    // llvmpipe?" Each check has an independent signal and an independent fix.
+
+    // 1. Running kernel staleness — the uniquely-Arch friction point. Rolling release
+    //    means pacman upgrades don't wait for a reboot; if the user hasn't rebooted
+    //    since the last kernel bump, /usr/lib/modules/<running>/ is gone and no module
+    //    can load against the live kernel. The only fix is reboot — not a RepairAction.
+    if let Some(stale) = crate::core::rendering::check_kernel_staleness(
+        &ctx.paths.kernel_osrelease,
+        &ctx.paths.modules_dir,
+    ) {
+        findings.push(Finding::error(
+            "Kernel upgraded on disk — reboot required",
+            format!(
+                "Running kernel `{}` has no modules directory ({} is missing). pacman upgraded the kernel since the last boot; module load will fail for every GPU driver until you reboot.",
+                stale.running_kernel,
+                stale.missing_modules_dir.display(),
+            ),
+            "Reboot. Nothing else will fix this — archgpu can't safely automate a reboot.",
+        ));
+    }
+
+    // 2. nomodeset on the live kernel cmdline — hard-locks software rendering. This
+    //    one IS auto-fixable; the scan::repair::RemoveNomodesetFromCmdline RepairAction
+    //    already handles it and it surfaces in the Phase 20 repair Finding loop above.
+    //    We don't double-report here; the repair message is sufficient.
+
+    // 3. Secure Boot enabled + unsigned DKMS module. We can't safely automate either
+    //    disabling SB or signing modules — emit as a Warning with sbctl pointers.
+    match crate::core::rendering::check_secure_boot(&ctx.paths.secureboot_efivars_dir) {
+        crate::core::rendering::SecureBootStatus::Enabled => {
+            // Only flag as problematic when we actually have a *-dkms driver installed
+            // AND the nvidia module hasn't loaded — otherwise SB is likely fine.
+            let nvidia_loaded = ctx.paths.sys_module.join("nvidia").exists();
+            let installed = pacman_installed_set();
+            let dkms_installed = ["nvidia-open-dkms", "nvidia-dkms", "nvidia-470xx-dkms", "nvidia-390xx-dkms"]
+                .iter()
+                .any(|p| installed.contains(*p));
+            if dkms_installed && !nvidia_loaded {
+                findings.push(Finding::warn(
+                    "Secure Boot is enabled and NVIDIA module is not loaded",
+                    "When Secure Boot is enforced, the kernel silently rejects unsigned modules. The nvidia-*-dkms package is installed but /sys/module/nvidia/ is missing — most likely cause: the freshly-built module isn't signed with a key Secure Boot trusts.",
+                    "Either disable Secure Boot in UEFI firmware, or sign the NVIDIA module via `sbctl`. See https://wiki.archlinux.org/title/Unified_Extensible_Firmware_Interface/Secure_Boot#Using_your_own_keys.",
+                ));
+            }
+        }
+        crate::core::rendering::SecureBootStatus::Disabled
+        | crate::core::rendering::SecureBootStatus::Unknown => {}
+    }
+
+    // 5. Direct llvmpipe probe — best-effort. Runs glxinfo -B (from mesa-utils) and
+    //    vulkaninfo --summary (from vulkan-tools) if present, classifies their renderer
+    //    strings, emits an Error Finding when either reports software rendering. This
+    //    is the "system is ACTUALLY in llvmpipe right now" signal that tells users
+    //    their setup truly is broken — correlate with Findings 1-4 to understand why.
+    for probe_cmd in ["glxinfo", "vulkaninfo"] {
+        let args: &[&str] = if probe_cmd == "glxinfo" {
+            &["-B"]
+        } else {
+            &["--summary"]
+        };
+        let Ok(output) = Command::new(probe_cmd).args(args).output() else {
+            continue; // Binary not installed — mesa-utils / vulkan-tools not required.
+        };
+        if !output.status.success() {
+            continue; // Binary exists but failed (no compositor / no X socket / etc).
+        }
+        let combined = String::from_utf8_lossy(&output.stdout);
+        if let crate::core::rendering::RendererState::SoftwareRendering(line) =
+            crate::core::rendering::classify_renderer_output(&combined)
+        {
+            findings.push(Finding::error(
+                format!("{probe_cmd} reports software rendering"),
+                format!(
+                    "Live probe: `{}`. Your compositor is currently using llvmpipe/softpipe for GL or Vulkan. Check Findings above — kernel staleness (reboot?), nomodeset, Secure Boot, or a dangling Vulkan ICD are the four common root causes.",
+                    line,
+                ),
+                "Resolve one of the other Findings first (they're listed above), then re-run `archgpu --diagnose` to reverify.",
+            ));
+        }
+    }
+
+    // 4. Dangling Vulkan ICD JSONs — library_path points to a file that doesn't exist.
+    //    Common cause: user removed an AMDVLK package but a stale JSON stayed behind,
+    //    or a manual `ninja install` clobbered and then got rolled back. Not
+    //    auto-fixed; `rm` on an unowned /usr/share file is too invasive.
+    for issue in crate::core::rendering::check_vulkan_icds(&ctx.paths.vulkan_icd_dir) {
+        let (title, detail, fix) = match &issue.problem {
+            crate::core::rendering::IcdProblem::DanglingAbsolutePath(p) => (
+                "Vulkan ICD manifest references a missing library",
+                format!(
+                    "{} → library_path = \"{}\" (not present on disk). The Vulkan loader will either silently drop this ICD or return an error its caller converts to llvmpipe.",
+                    issue.json_path.display(),
+                    p,
+                ),
+                format!(
+                    "Inspect the manifest — if its package is missing, either reinstall it or remove the stale manifest via `sudo rm {}`.",
+                    issue.json_path.display(),
+                ),
+            ),
+            crate::core::rendering::IcdProblem::Unparseable => (
+                "Vulkan ICD manifest is unparseable",
+                format!(
+                    "{}: couldn't extract a library_path. Manifest is malformed or truncated.",
+                    issue.json_path.display(),
+                ),
+                format!(
+                    "Inspect the manifest — if its package is missing, either reinstall it or remove the stale manifest via `sudo rm {}`.",
+                    issue.json_path.display(),
+                ),
+            ),
+        };
+        findings.push(Finding::warn(title, detail, fix));
+    }
+
     findings
+}
+
+/// Helper: cheap `pacman -Qq` set snapshot for the Secure Boot DKMS check. Copies the
+/// same pattern as `core::repair::pacman_installed_packages` but local to this module
+/// to avoid a cross-module dependency.
+fn pacman_installed_set() -> std::collections::HashSet<String> {
+    let Ok(out) = Command::new("pacman").arg("-Qq").output() else {
+        return std::collections::HashSet::new();
+    };
+    if !out.status.success() {
+        return std::collections::HashSet::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
 }
 
 fn check_cmdline_modeset(ctx: &Context, out: &mut Vec<Finding>) {

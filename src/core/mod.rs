@@ -8,6 +8,7 @@ pub mod gpu;
 pub mod hardware;
 pub mod power;
 pub mod prime;
+pub mod rendering;
 pub mod repair;
 pub mod state;
 pub mod wayland;
@@ -45,6 +46,12 @@ pub struct SystemPaths {
     pub pacman_conf: PathBuf,
     pub dmi_chassis: PathBuf,
     pub cpuinfo: PathBuf, // Phase 21: CET-IBT probe via /proc/cpuinfo flags
+    // Phase 22: smart-diagnostics probes for software-rendering root-causes.
+    pub kernel_osrelease: PathBuf,       // /proc/sys/kernel/osrelease — running kernel version
+    pub modules_dir: PathBuf,            // /usr/lib/modules — each running kernel has a subdir
+    pub proc_cmdline: PathBuf,           // /proc/cmdline — live kernel cmdline (for nomodeset check)
+    pub secureboot_efivars_dir: PathBuf, // /sys/firmware/efi/efivars — SecureBoot-<guid> variable lives here
+    pub vulkan_icd_dir: PathBuf,         // /usr/share/vulkan/icd.d — ICD JSONs referencing driver .so
     pub backup_dir: PathBuf,
     // Phase 17: live-kernel-state probe. `sys_module` is the root of the /sys/module tree;
     // specific params live under <sys_module>/<module>/parameters/<name>. A missing
@@ -72,6 +79,11 @@ impl SystemPaths {
             pacman_conf: PathBuf::from("/etc/pacman.conf"),
             dmi_chassis: PathBuf::from("/sys/class/dmi/id/chassis_type"),
             cpuinfo: PathBuf::from("/proc/cpuinfo"),
+            kernel_osrelease: PathBuf::from("/proc/sys/kernel/osrelease"),
+            modules_dir: PathBuf::from("/usr/lib/modules"),
+            proc_cmdline: PathBuf::from("/proc/cmdline"),
+            secureboot_efivars_dir: PathBuf::from("/sys/firmware/efi/efivars"),
+            vulkan_icd_dir: PathBuf::from("/usr/share/vulkan/icd.d"),
             backup_dir: PathBuf::from("/var/backups/archgpu"),
             sys_module: PathBuf::from("/sys/module"),
             grub_default: PathBuf::from("/etc/default/grub"),
@@ -101,6 +113,11 @@ impl SystemPaths {
             pacman_conf: root.join("etc/pacman.conf"),
             dmi_chassis: root.join("sys/class/dmi/id/chassis_type"),
             cpuinfo: root.join("proc/cpuinfo"),
+            kernel_osrelease: root.join("proc/sys/kernel/osrelease"),
+            modules_dir: root.join("usr/lib/modules"),
+            proc_cmdline: root.join("proc/cmdline"),
+            secureboot_efivars_dir: root.join("sys/firmware/efi/efivars"),
+            vulkan_icd_dir: root.join("usr/share/vulkan/icd.d"),
             backup_dir: root.join("var/backups/archgpu"),
             sys_module: root.join("sys/module"),
             grub_default: root.join("etc/default/grub"),

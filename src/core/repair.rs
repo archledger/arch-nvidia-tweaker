@@ -81,6 +81,12 @@ pub enum RepairAction {
     /// (no-op on a healthy host). Required when a pre-Phase-18 archgpu installed a
     /// `*-dkms` driver without kernel headers and the module never built.
     ForceDkmsRebuild,
+
+    /// Phase 22: `nomodeset` is on /proc/cmdline. Hard-forces software rendering — blocks
+    /// DRM modesetting for every GPU driver. Delegates to `bootloader::apply_remove`
+    /// which strips the token from the active bootloader's cmdline source
+    /// (GRUB / systemd-boot / Limine / UKI) and regenerates.
+    RemoveNomodesetFromCmdline,
 }
 
 impl RepairAction {
@@ -99,6 +105,10 @@ impl RepairAction {
                 "Force DKMS rebuild of the NVIDIA kernel module (running kernel has no nvidia module despite *-dkms driver installed)"
                     .into()
             }
+            Self::RemoveNomodesetFromCmdline => {
+                "Remove `nomodeset` from the kernel command line (hard-locks software rendering — blocks DRM modesetting for every GPU driver)"
+                    .into()
+            }
         }
     }
 }
@@ -113,6 +123,7 @@ impl RepairAction {
 ///  - `nvidia_prime_installed`: whether `nvidia-prime` appears in `pacman -Qq`.
 ///  - `nvidia_dkms_package_installed`: whether ANY `*-dkms` NVIDIA driver is in `pacman -Qq`.
 ///  - `nvidia_module_loaded`: whether `/sys/module/nvidia/` exists (module present in running kernel).
+///  - `nomodeset_in_cmdline`: whether `nomodeset` is on `/proc/cmdline` (Phase 22).
 pub fn scan_from_state(
     form: FormFactor,
     is_hybrid: bool,
@@ -120,6 +131,7 @@ pub fn scan_from_state(
     nvidia_prime_installed: bool,
     nvidia_dkms_package_installed: bool,
     nvidia_module_loaded: bool,
+    nomodeset_in_cmdline: bool,
 ) -> Vec<RepairAction> {
     let mut out = Vec::new();
 
@@ -146,6 +158,13 @@ pub fn scan_from_state(
         out.push(RepairAction::ForceDkmsRebuild);
     }
 
+    // Rule 4 (Phase 22): `nomodeset` on the live kernel cmdline. Universal remediation —
+    // no GPU or form factor gate: `nomodeset` forces llvmpipe for EVERYONE, regardless
+    // of hardware. Dispatch to bootloader::apply_remove.
+    if nomodeset_in_cmdline {
+        out.push(RepairAction::RemoveNomodesetFromCmdline);
+    }
+
     out
 }
 
@@ -167,6 +186,8 @@ pub fn scan(ctx: &Context, gpus: &GpuInventory, form: FormFactor) -> Vec<RepairA
         .iter()
         .any(|p| installed.contains(*p));
     let nvidia_module_loaded = ctx.paths.sys_module.join("nvidia").exists();
+    // Phase 22: probe /proc/cmdline for the `nomodeset` token.
+    let nomodeset = crate::core::rendering::check_nomodeset_in_cmdline(&ctx.paths.proc_cmdline);
 
     scan_from_state(
         form,
@@ -175,6 +196,7 @@ pub fn scan(ctx: &Context, gpus: &GpuInventory, form: FormFactor) -> Vec<RepairA
         nvidia_prime_installed,
         nvidia_dkms_installed,
         nvidia_module_loaded,
+        nomodeset,
     )
 }
 
@@ -207,6 +229,9 @@ fn apply_one(
             run_pacman_remove(ctx, NVIDIA_PRIME_PACKAGE, assume_yes, progress)
         }
         RepairAction::ForceDkmsRebuild => run_dkms_autoinstall(ctx, progress),
+        RepairAction::RemoveNomodesetFromCmdline => {
+            crate::core::bootloader::apply_remove(ctx, &["nomodeset"], progress)
+        }
     }
 }
 
@@ -369,7 +394,7 @@ mod tests {
 
     #[test]
     fn scan_clean_system_returns_empty() {
-        let out = scan_from_state(FormFactor::Desktop, false, None, false, false, true);
+        let out = scan_from_state(FormFactor::Desktop, false, None, false, false, true, false);
         assert!(out.is_empty());
     }
 
@@ -383,6 +408,7 @@ mod tests {
             false,
             false,
             true,
+            false,
         );
         assert!(out
             .iter()
@@ -394,7 +420,15 @@ mod tests {
         // On a laptop hybrid, `/etc/X11/xorg.conf.d/10-archgpu-prime.conf` is the CORRECT
         // output of Phase-19 `prime::apply`. Scanner must NOT flag it for deletion.
         let legit = PathBuf::from("/etc/X11/xorg.conf.d/10-archgpu-prime.conf");
-        let out = scan_from_state(FormFactor::Laptop, true, Some(legit), false, false, true);
+        let out = scan_from_state(
+            FormFactor::Laptop,
+            true,
+            Some(legit),
+            false,
+            false,
+            true,
+            false,
+        );
         assert!(out.is_empty(),
             "laptop-hybrid PRIME drop-in must not be flagged as repair target: {out:?}");
     }
@@ -413,21 +447,21 @@ mod tests {
             false,
             false,
             true,
+            false,
         );
         assert!(out.iter().any(|a| matches!(a, RepairAction::DeleteStalePrimeDropin { .. })));
     }
 
     #[test]
     fn scan_desktop_hybrid_with_nvidia_prime_flags_removal() {
-        let out =
-            scan_from_state(FormFactor::Desktop, true, None, true, false, true);
+        let out = scan_from_state(FormFactor::Desktop, true, None, true, false, true, false);
         assert!(out.contains(&RepairAction::RemoveNvidiaPrimeOnDesktop));
     }
 
     #[test]
     fn scan_laptop_hybrid_with_nvidia_prime_is_legitimate() {
         // Laptop hybrid + nvidia-prime installed is the EXPECTED state (Phase 19 adds it).
-        let out = scan_from_state(FormFactor::Laptop, true, None, true, false, true);
+        let out = scan_from_state(FormFactor::Laptop, true, None, true, false, true, false);
         assert!(!out.contains(&RepairAction::RemoveNvidiaPrimeOnDesktop));
     }
 
@@ -435,7 +469,7 @@ mod tests {
     fn scan_desktop_non_hybrid_with_nvidia_prime_is_left_alone() {
         // User has nvidia-prime on a non-hybrid desktop. Weird but benign. Don't force
         // a removal — the user may have plans. We only act on the concrete mismatch.
-        let out = scan_from_state(FormFactor::Desktop, false, None, true, false, true);
+        let out = scan_from_state(FormFactor::Desktop, false, None, true, false, true, false);
         assert!(!out.contains(&RepairAction::RemoveNvidiaPrimeOnDesktop));
     }
 
@@ -443,14 +477,14 @@ mod tests {
     fn scan_dkms_driver_but_no_module_loaded_flags_rebuild() {
         // The Phase-18 silent-failure symptom: nvidia-open-dkms is installed but
         // /sys/module/nvidia/ doesn't exist — module never built. Rebuild is required.
-        let out = scan_from_state(FormFactor::Desktop, false, None, false, true, false);
+        let out = scan_from_state(FormFactor::Desktop, false, None, false, true, false, false);
         assert!(out.contains(&RepairAction::ForceDkmsRebuild));
     }
 
     #[test]
     fn scan_dkms_driver_with_module_loaded_is_healthy() {
         // Module is loaded → DKMS built successfully → nothing to rebuild.
-        let out = scan_from_state(FormFactor::Desktop, false, None, false, true, true);
+        let out = scan_from_state(FormFactor::Desktop, false, None, false, true, true, false);
         assert!(!out.contains(&RepairAction::ForceDkmsRebuild));
     }
 
@@ -458,7 +492,7 @@ mod tests {
     fn scan_no_dkms_driver_no_rebuild_even_if_module_absent() {
         // No DKMS driver installed (e.g. AMD-only host). No rebuild to trigger — the
         // absence of /sys/module/nvidia/ is the correct state on this host.
-        let out = scan_from_state(FormFactor::Desktop, false, None, false, false, false);
+        let out = scan_from_state(FormFactor::Desktop, false, None, false, false, false, false);
         assert!(!out.contains(&RepairAction::ForceDkmsRebuild));
     }
 
@@ -474,8 +508,62 @@ mod tests {
             true,
             true,
             false,
+            false,
         );
         assert_eq!(out.len(), 3, "expected all three repairs to fire, got: {out:?}");
+    }
+
+    // ── Phase 22: nomodeset repair ────────────────────────────────────────────────────────
+
+    #[test]
+    fn scan_nomodeset_flags_removal_regardless_of_gpu_or_chassis() {
+        // `nomodeset` forces llvmpipe for EVERYONE — universal remediation, no gate.
+        // Check it fires on all relevant combinations.
+        for (form, is_hybrid) in [
+            (FormFactor::Desktop, false),
+            (FormFactor::Desktop, true),
+            (FormFactor::Laptop, false),
+            (FormFactor::Laptop, true),
+            (FormFactor::Unknown, false),
+        ] {
+            let out = scan_from_state(form, is_hybrid, None, false, false, true, true);
+            assert!(
+                out.contains(&RepairAction::RemoveNomodesetFromCmdline),
+                "nomodeset repair must fire on form={form:?} is_hybrid={is_hybrid}"
+            );
+        }
+    }
+
+    #[test]
+    fn scan_nomodeset_absent_does_not_flag_removal() {
+        let out = scan_from_state(FormFactor::Desktop, false, None, false, false, true, false);
+        assert!(!out.contains(&RepairAction::RemoveNomodesetFromCmdline));
+    }
+
+    #[test]
+    fn apply_nomodeset_removal_plans_uki_rewrite_in_dry_run() {
+        // Full integration path: apply() → scan() → detects nomodeset in proc/cmdline →
+        // dispatches to bootloader::apply_remove which strips it from /etc/kernel/cmdline.
+        let dir = tempdir().unwrap();
+        let ctx = Context::rooted_for_test(dir.path(), ExecutionMode::DryRun);
+        // Seed the UKI cmdline source so bootloader detects UKI as the active
+        // bootloader, and seed proc/cmdline so rendering::check_nomodeset_in_cmdline
+        // returns true.
+        std::fs::create_dir_all(ctx.paths.kernel_cmdline.parent().unwrap()).unwrap();
+        std::fs::write(&ctx.paths.kernel_cmdline, "rw nomodeset quiet\n").unwrap();
+        std::fs::create_dir_all(ctx.paths.proc_cmdline.parent().unwrap()).unwrap();
+        std::fs::write(&ctx.paths.proc_cmdline, "rw nomodeset quiet\n").unwrap();
+        // Seed sys/module/nvidia to silence the DKMS-rebuild branch on hosts that
+        // have nvidia-open-dkms installed.
+        std::fs::create_dir_all(ctx.paths.sys_module.join("nvidia")).unwrap();
+        let no_gpus = GpuInventory { gpus: vec![] };
+
+        let reports = apply(&ctx, &no_gpus, FormFactor::Desktop, false, &mut |_| {}).unwrap();
+        let plan = reports
+            .iter()
+            .find(|r| matches!(r, ChangeReport::Planned { detail } if detail.contains("remove nomodeset")))
+            .unwrap_or_else(|| panic!("nomodeset removal plan missing: {reports:#?}"));
+        assert!(matches!(plan, ChangeReport::Planned { .. }));
     }
 
     // ── runtime apply paths ───────────────────────────────────────────────────────────────
@@ -605,6 +693,7 @@ mod tests {
             },
             RepairAction::RemoveNvidiaPrimeOnDesktop,
             RepairAction::ForceDkmsRebuild,
+            RepairAction::RemoveNomodesetFromCmdline,
         ] {
             let s = action.human_summary();
             assert!(!s.is_empty(), "summary empty for {action:?}");

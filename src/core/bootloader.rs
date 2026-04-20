@@ -924,6 +924,400 @@ fn limine_add_param(original: &str, param: &str) -> (String, bool, bool) {
     (result, changed, found)
 }
 
+// ─── Phase 22: remove_kernel_param plumbing ─────────────────────────────────────────────────
+//
+// Mirror of the add-param logic for the Phase-22 `nomodeset` auto-fix. The primary entry
+// point `apply_remove` takes a list of cmdline tokens to strip, detects the active
+// bootloader, and writes the modified cmdline source back. Idempotent (returns
+// AlreadyApplied when none of the params were present to begin with).
+
+/// Pure: remove every occurrence of `param` from a cmdline value. Returns (new_value,
+/// changed). Whole-token filter, same matching semantics as `cmdline_contains` — so
+/// `strip_cmdline_param("rw nomodeset quiet", "nomodeset")` returns ("rw quiet", true)
+/// and `strip_cmdline_param("rw nomodesetting", "nomodeset")` returns unchanged.
+pub fn strip_cmdline_param(value: &str, param: &str) -> (String, bool) {
+    let mut out: Vec<&str> = Vec::new();
+    let mut changed = false;
+    for tok in value.split_whitespace() {
+        if tok == param {
+            changed = true;
+        } else {
+            out.push(tok);
+        }
+    }
+    (out.join(" "), changed)
+}
+
+fn grub_remove_param(original: &str, param: &str) -> (String, bool, bool) {
+    let mut lines: Vec<String> = Vec::with_capacity(original.lines().count());
+    let mut changed = false;
+    let mut found = false;
+
+    for line in original.lines() {
+        let t = line.trim_start();
+        if t.starts_with('#') {
+            lines.push(line.to_string());
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("GRUB_CMDLINE_LINUX_DEFAULT=") {
+            found = true;
+            let indent = &line[..line.len() - t.len()];
+            let first = rest.chars().next();
+            if first == Some('"') || first == Some('\'') {
+                let q = first.unwrap();
+                let inner = &rest[1..];
+                let close = inner.rfind(q).unwrap_or(inner.len());
+                let value = &inner[..close];
+                let tail = if close < inner.len() {
+                    &inner[close + 1..]
+                } else {
+                    ""
+                };
+                let (new_value, this_changed) = strip_cmdline_param(value, param);
+                if this_changed {
+                    lines.push(format!(
+                        "{indent}GRUB_CMDLINE_LINUX_DEFAULT={q}{new_value}{q}{tail}"
+                    ));
+                    changed = true;
+                } else {
+                    lines.push(line.to_string());
+                }
+            } else {
+                let (new_value, this_changed) = strip_cmdline_param(rest, param);
+                if this_changed {
+                    lines.push(format!(
+                        "{indent}GRUB_CMDLINE_LINUX_DEFAULT=\"{new_value}\""
+                    ));
+                    changed = true;
+                } else {
+                    lines.push(line.to_string());
+                }
+            }
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    let mut result = lines.join("\n");
+    if original.ends_with('\n') {
+        result.push('\n');
+    }
+    (result, changed, found)
+}
+
+fn sdb_remove_param(body: &str, param: &str) -> (String, bool, bool) {
+    let mut lines: Vec<String> = Vec::with_capacity(body.lines().count());
+    let mut changed = false;
+    let mut found = false;
+    for line in body.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("options ") {
+            found = true;
+            let indent = &line[..line.len() - t.len()];
+            let (new_value, this_changed) = strip_cmdline_param(rest, param);
+            if this_changed {
+                lines.push(format!("{indent}options {new_value}"));
+                changed = true;
+            } else {
+                lines.push(line.to_string());
+            }
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    let mut result = lines.join("\n");
+    if body.ends_with('\n') {
+        result.push('\n');
+    }
+    (result, changed, found)
+}
+
+fn limine_remove_param(original: &str, param: &str) -> (String, bool, bool) {
+    // Limine v9+ YAML-ish `cmdline:` / `kernel_cmdline:` keys, plus legacy `KERNEL_CMDLINE=`
+    // pre-v9. Mirror the key-detection from limine_add_param.
+    let mut lines: Vec<String> = Vec::with_capacity(original.lines().count());
+    let mut changed = false;
+    let mut found = false;
+    for line in original.lines() {
+        let t = line.trim_start();
+        if t.starts_with('#') {
+            lines.push(line.to_string());
+            continue;
+        }
+        let (key, sep, rest) = if let Some(r) = t.strip_prefix("cmdline:") {
+            ("cmdline", ":", r)
+        } else if let Some(r) = t.strip_prefix("kernel_cmdline:") {
+            ("kernel_cmdline", ":", r)
+        } else if let Some(r) = t.strip_prefix("KERNEL_CMDLINE=") {
+            ("KERNEL_CMDLINE", "=", r)
+        } else {
+            lines.push(line.to_string());
+            continue;
+        };
+        found = true;
+        let indent = &line[..line.len() - t.len()];
+        let (new_value, this_changed) = strip_cmdline_param(rest, param);
+        if this_changed {
+            // Preserve leading space after the separator to keep formatting natural.
+            lines.push(format!("{indent}{key}{sep} {new_value}"));
+            changed = true;
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    let mut result = lines.join("\n");
+    if original.ends_with('\n') {
+        result.push('\n');
+    }
+    (result, changed, found)
+}
+
+/// Public entry point: remove the listed cmdline params from the active bootloader's
+/// cmdline source. Idempotent — returns AlreadyApplied if no param was present.
+/// Regenerates the bootloader (grub-mkconfig / bootctl update / mkinitcpio -P) the same
+/// way `apply()` does when a write actually happened.
+pub fn apply_remove(
+    ctx: &Context,
+    params: &[&str],
+    progress: &mut dyn FnMut(&str),
+) -> Result<ChangeReport> {
+    match detect_active_bootloader(ctx) {
+        BootloaderType::Grub => apply_remove_grub(ctx, params, progress),
+        BootloaderType::SystemdBoot => apply_remove_sdb(ctx, params, progress),
+        BootloaderType::Limine => apply_remove_limine(ctx, params),
+        BootloaderType::Uki => apply_remove_uki(ctx, params, progress),
+        BootloaderType::Unknown => Ok(ChangeReport::AlreadyApplied {
+            detail: "unknown bootloader — can't remove cmdline params".into(),
+        }),
+    }
+}
+
+fn apply_remove_uki(
+    ctx: &Context,
+    params: &[&str],
+    progress: &mut dyn FnMut(&str),
+) -> Result<ChangeReport> {
+    let path = &ctx.paths.kernel_cmdline;
+    let original =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut new = original.clone();
+    let mut removed: Vec<&str> = Vec::new();
+    for p in params {
+        let (updated, changed) = strip_cmdline_param(new.trim_end(), p);
+        if changed {
+            // Preserve trailing newline if the original had one.
+            new = if original.ends_with('\n') {
+                format!("{updated}\n")
+            } else {
+                updated
+            };
+            removed.push(*p);
+        }
+    }
+    if removed.is_empty() {
+        return Ok(ChangeReport::AlreadyApplied {
+            detail: format!(
+                "{}: no cmdline params to remove ({})",
+                path.display(),
+                params.join(" ")
+            ),
+        });
+    }
+    if ctx.mode.is_dry_run() {
+        return Ok(ChangeReport::Planned {
+            detail: format!(
+                "UKI: remove {} from {} + run mkinitcpio -P",
+                removed.join(" "),
+                path.display()
+            ),
+        });
+    }
+    let backup = backup_to_dir(path, &ctx.paths.backup_dir)?;
+    atomic_write(path, &new)?;
+
+    progress("[mkinitcpio] rebuilding UKIs via mkinitcpio -P");
+    let mut cmd = Command::new("mkinitcpio");
+    cmd.arg("-P");
+    let status = run_streaming(cmd, |line| progress(&format!("[mkinitcpio] {line}")))?;
+    if !status.success() {
+        anyhow::bail!("mkinitcpio -P exited with {status}");
+    }
+    Ok(ChangeReport::Applied {
+        detail: format!("UKI: removed {} + rebuilt UKIs", removed.join(" ")),
+        backup,
+    })
+}
+
+fn apply_remove_grub(
+    ctx: &Context,
+    params: &[&str],
+    progress: &mut dyn FnMut(&str),
+) -> Result<ChangeReport> {
+    let path = &ctx.paths.grub_default;
+    let original =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut body = original.clone();
+    let mut removed: Vec<&str> = Vec::new();
+    for p in params {
+        let (updated, changed, _found) = grub_remove_param(&body, p);
+        if changed {
+            body = updated;
+            removed.push(*p);
+        }
+    }
+    if removed.is_empty() {
+        return Ok(ChangeReport::AlreadyApplied {
+            detail: format!("{}: no cmdline params to remove", path.display()),
+        });
+    }
+    if ctx.mode.is_dry_run() {
+        return Ok(ChangeReport::Planned {
+            detail: format!(
+                "GRUB: remove {} from {} + run grub-mkconfig",
+                removed.join(" "),
+                path.display()
+            ),
+        });
+    }
+    let backup = backup_to_dir(path, &ctx.paths.backup_dir)?;
+    atomic_write(path, &body)?;
+    progress("[grub-mkconfig] regenerating grub.cfg");
+    let mut cmd = Command::new("grub-mkconfig");
+    cmd.arg("-o").arg(&ctx.paths.grub_cfg);
+    let status = run_streaming(cmd, |line| progress(&format!("[grub-mkconfig] {line}")))?;
+    if !status.success() {
+        anyhow::bail!("grub-mkconfig exited with {status}");
+    }
+    Ok(ChangeReport::Applied {
+        detail: format!("GRUB: removed {} + regenerated grub.cfg", removed.join(" ")),
+        backup,
+    })
+}
+
+fn apply_remove_sdb(
+    ctx: &Context,
+    params: &[&str],
+    progress: &mut dyn FnMut(&str),
+) -> Result<ChangeReport> {
+    let entries_dir = &ctx.paths.sdb_entries;
+    let Ok(rd) = std::fs::read_dir(entries_dir) else {
+        return Ok(ChangeReport::AlreadyApplied {
+            detail: format!("{}: no entries directory", entries_dir.display()),
+        });
+    };
+    let mut any_changed = false;
+    let mut removed_summary: Vec<&str> = Vec::new();
+    let mut per_entry_backups: Vec<PathBuf> = Vec::new();
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("conf") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let mut new_body = body.clone();
+        let mut this_changed = false;
+        for param in params {
+            let (updated, changed, _found) = sdb_remove_param(&new_body, param);
+            if changed {
+                new_body = updated;
+                this_changed = true;
+                if !removed_summary.contains(param) {
+                    removed_summary.push(*param);
+                }
+            }
+        }
+        if this_changed {
+            any_changed = true;
+            if !ctx.mode.is_dry_run() {
+                if let Some(bk) = backup_to_dir(&p, &ctx.paths.backup_dir)? {
+                    per_entry_backups.push(bk);
+                }
+                atomic_write(&p, &new_body)?;
+            }
+        }
+    }
+    if !any_changed {
+        return Ok(ChangeReport::AlreadyApplied {
+            detail: format!("{}: no cmdline params to remove", entries_dir.display()),
+        });
+    }
+    if ctx.mode.is_dry_run() {
+        return Ok(ChangeReport::Planned {
+            detail: format!(
+                "systemd-boot: remove {} from entries in {} + run bootctl update",
+                removed_summary.join(" "),
+                entries_dir.display()
+            ),
+        });
+    }
+    progress("[bootctl] updating systemd-boot");
+    let mut cmd = Command::new("bootctl");
+    cmd.arg("update");
+    let status = run_streaming(cmd, |line| progress(&format!("[bootctl] {line}")))?;
+    if !status.success() {
+        anyhow::bail!("bootctl update exited with {status}");
+    }
+    Ok(ChangeReport::Applied {
+        detail: format!(
+            "systemd-boot: removed {} from entries ({} backups)",
+            removed_summary.join(" "),
+            per_entry_backups.len()
+        ),
+        backup: per_entry_backups.into_iter().next(),
+    })
+}
+
+fn apply_remove_limine(ctx: &Context, params: &[&str]) -> Result<ChangeReport> {
+    // Find the first candidate config file that exists.
+    let Some(path) = ctx
+        .paths
+        .limine_candidates
+        .iter()
+        .find(|p| p.exists())
+        .cloned()
+    else {
+        return Ok(ChangeReport::AlreadyApplied {
+            detail: "Limine config not found in any candidate path".into(),
+        });
+    };
+    let original = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let mut body = original.clone();
+    let mut removed: Vec<&str> = Vec::new();
+    for p in params {
+        let (updated, changed, _found) = limine_remove_param(&body, p);
+        if changed {
+            body = updated;
+            removed.push(*p);
+        }
+    }
+    if removed.is_empty() {
+        return Ok(ChangeReport::AlreadyApplied {
+            detail: format!("{}: no cmdline params to remove", path.display()),
+        });
+    }
+    if ctx.mode.is_dry_run() {
+        return Ok(ChangeReport::Planned {
+            detail: format!(
+                "Limine: remove {} from {} (no regen needed)",
+                removed.join(" "),
+                path.display()
+            ),
+        });
+    }
+    let backup = backup_to_dir(&path, &ctx.paths.backup_dir)?;
+    atomic_write(&path, &body)?;
+    Ok(ChangeReport::Applied {
+        detail: format!(
+            "Limine: removed {} from {}",
+            removed.join(" "),
+            path.display()
+        ),
+        backup,
+    })
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1157,6 +1551,101 @@ MODULE_PATH=boot():/initramfs-linux.img
         // File unchanged after dry-run
         let body = std::fs::read_to_string(&ctx.paths.kernel_cmdline).unwrap();
         assert_eq!(body, "rw quiet\n");
+    }
+
+    // Phase 22: strip_cmdline_param + apply_remove --------------------------------------------
+
+    #[test]
+    fn strip_cmdline_param_removes_whole_token_only() {
+        assert_eq!(
+            strip_cmdline_param("rw nomodeset quiet", "nomodeset"),
+            ("rw quiet".to_string(), true)
+        );
+        assert_eq!(
+            strip_cmdline_param("rw nomodesetting quiet", "nomodeset"),
+            ("rw nomodesetting quiet".to_string(), false),
+            "substring match must NOT count — whole-token only"
+        );
+    }
+
+    #[test]
+    fn strip_cmdline_param_handles_duplicate_occurrences() {
+        assert_eq!(
+            strip_cmdline_param("nomodeset rw nomodeset quiet nomodeset", "nomodeset"),
+            ("rw quiet".to_string(), true)
+        );
+    }
+
+    #[test]
+    fn strip_cmdline_param_noop_when_absent() {
+        assert_eq!(
+            strip_cmdline_param("rw quiet nvidia-drm.modeset=1", "nomodeset"),
+            ("rw quiet nvidia-drm.modeset=1".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn uki_apply_remove_deletes_nomodeset_in_dry_run() {
+        let dir = tempdir().unwrap();
+        let ctx = Context::rooted_for_test(dir.path(), ExecutionMode::DryRun);
+        write(&ctx.paths.kernel_cmdline, "rw nomodeset quiet\n");
+        let r = apply_remove(&ctx, &["nomodeset"], &mut |_| {}).unwrap();
+        match r {
+            ChangeReport::Planned { detail } => {
+                assert!(detail.contains("remove nomodeset"), "got detail: {detail}");
+            }
+            other => panic!("expected Planned, got {other:?}"),
+        }
+        // Dry-run must not modify the file.
+        assert_eq!(
+            std::fs::read_to_string(&ctx.paths.kernel_cmdline).unwrap(),
+            "rw nomodeset quiet\n"
+        );
+    }
+
+    #[test]
+    fn uki_apply_remove_is_idempotent_when_param_absent() {
+        let dir = tempdir().unwrap();
+        let ctx = Context::rooted_for_test(dir.path(), ExecutionMode::DryRun);
+        write(&ctx.paths.kernel_cmdline, "rw quiet\n");
+        let r = apply_remove(&ctx, &["nomodeset"], &mut |_| {}).unwrap();
+        assert!(matches!(r, ChangeReport::AlreadyApplied { .. }));
+    }
+
+    #[test]
+    fn grub_remove_param_strips_from_quoted_value() {
+        let input = "GRUB_CMDLINE_LINUX_DEFAULT=\"rw nomodeset quiet\"\n";
+        let (out, changed, found) = grub_remove_param(input, "nomodeset");
+        assert!(changed);
+        assert!(found);
+        assert_eq!(out, "GRUB_CMDLINE_LINUX_DEFAULT=\"rw quiet\"\n");
+    }
+
+    #[test]
+    fn sdb_remove_param_strips_from_options_line() {
+        let body = "\
+title Arch Linux
+linux /vmlinuz-linux
+options rw nomodeset quiet root=/dev/nvme0n1p2
+";
+        let (out, changed, found) = sdb_remove_param(body, "nomodeset");
+        assert!(changed);
+        assert!(found);
+        assert!(out.contains("options rw quiet root=/dev/nvme0n1p2"));
+        assert!(!out.contains("nomodeset"));
+    }
+
+    #[test]
+    fn limine_remove_param_strips_from_cmdline_yaml() {
+        let body = "\
+/Arch Linux
+    cmdline: rw nomodeset quiet
+    kernel: boot():/vmlinuz-linux
+";
+        let (out, changed, found) = limine_remove_param(body, "nomodeset");
+        assert!(changed);
+        assert!(found);
+        assert!(out.contains("cmdline: rw quiet"));
     }
 
     // cmdline_contains ----------------------------------------------------------------------
