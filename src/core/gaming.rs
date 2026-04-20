@@ -50,11 +50,13 @@ const ALWAYS_ON_GAMING_PACKAGES: &[&str] = &[
     "lib32-gamemode",
     "mangohud",
     "lib32-mangohud",
-    // Phase 23: MangoHud's GTK configuration UI. Every MangoHud user ends up wanting
-    // a way to toggle overlays without hand-editing ~/.config/MangoHud/MangoHud.conf;
-    // goverlay is the standard front-end. Tiny (Pascal/Lazarus) — adds no meaningful
-    // install overhead.
-    "goverlay",
+    // Phase 25: `goverlay` was briefly in this list (Phase 23 addition) but moved out.
+    // It's a convenience GUI for MangoHud config, not structural to the gaming stack —
+    // and forcing it into the "required for Active" bar meant existing users with
+    // every core package installed saw the gaming tweak stuck as Unapplied forever
+    // (the toggle refused to transition to the green ✓ Active badge). Now surfaced
+    // as an Info-severity Finding in diagnostics::scan so users who want it can
+    // `pacman -S goverlay` themselves.
 ];
 
 /// Gaming setup is Applied when: `[multilib]` is enabled AND every required repo package
@@ -272,6 +274,25 @@ fn install_official_packages(
             packages.push(h);
         }
     }
+    // Phase 25: short-circuit when every package in the install queue is already
+    // installed per `pacman -Qq`. pacman -S --needed would silently do nothing in
+    // this case, but we'd still spawn it + stream its "up to date — skipping"
+    // lines into the log for every package, which is noise. Return a single clean
+    // AlreadyApplied report instead, so the UI / CLI reports exactly match the
+    // no-op reality and users see "nothing to do" at a glance.
+    if matches!(ctx.mode, ExecutionMode::Apply) {
+        if let Some(installed) = pacman_query_installed_set(&packages) {
+            if packages.iter().all(|p| installed.contains(p.as_str())) {
+                return Ok(ChangeReport::AlreadyApplied {
+                    detail: format!(
+                        "{} package(s) already installed — nothing to do",
+                        packages.len()
+                    ),
+                });
+            }
+        }
+    }
+
     // Phase 19: use `pacman -S --needed` (NOT `-Syu`) for the gaming install. Rationale:
     // `-u` forces a full system upgrade as a side effect, which is overreach for a
     // targeted "install these gaming packages" action and can surprise users who
@@ -800,10 +821,17 @@ mod tests {
     }
 
     #[test]
-    fn always_on_set_includes_goverlay() {
-        // Phase 23: MangoHud GUI. Every host (NVIDIA / AMD / Intel) gets it.
+    fn always_on_set_excludes_goverlay() {
+        // Phase 25: goverlay moved OUT of the always-on list. It was briefly required
+        // in Phase 23 but forcing a cosmetic tool into the Active-state bar left
+        // existing users stuck — the gaming tweak couldn't transition to ✓ Active
+        // without them running Apply again just to pull in goverlay. Now diagnostics
+        // surfaces it as an Info Finding instead.
         let pkgs = resolve_gaming_packages(&inv(vec![intel(0x64a0)]), FormFactor::Laptop);
-        assert!(pkgs.contains(&"goverlay".to_string()));
+        assert!(
+            !pkgs.contains(&"goverlay".to_string()),
+            "goverlay must not be in the required install list anymore: {pkgs:?}"
+        );
     }
 
     #[test]

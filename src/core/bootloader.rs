@@ -35,6 +35,12 @@ pub const NVIDIA_DRM_PARAM: &str = "nvidia-drm.modeset=1";
 pub const NVIDIA_DRM_FBDEV_PARAM: &str = "nvidia-drm.fbdev=1";
 pub const AMD_PPFEATUREMASK_PARAM: &str = "amdgpu.ppfeaturemask=0xffffffff";
 pub const I915_ENABLE_GUC_PARAM: &str = "i915.enable_guc=3";
+// Phase 25: universal quality-of-life boot params (applied regardless of GPU).
+// `quiet` suppresses verbose kernel dmesg during boot; `splash` signals to
+// plymouth-style bootsplash hooks that a graphical splash is expected. Harmless
+// on systems without plymouth (just a no-op flag the kernel ignores).
+pub const QUIET_PARAM: &str = "quiet";
+pub const SPLASH_PARAM: &str = "splash";
 // Phase 21: disables kernel-level Indirect Branch Tracking enforcement. Needed on
 // CET-IBT-capable CPUs (Alder Lake+ Intel, Zen 4+ AMD) running older NVIDIA drivers
 // whose indirect calls don't respect ENDBR landing pads. Arch Wiki recipe:
@@ -43,12 +49,16 @@ pub const I915_ENABLE_GUC_PARAM: &str = "i915.enable_guc=3";
 // on legacy ones (nvidia-470xx-dkms, nvidia-390xx-dkms).
 pub const IBT_OFF_PARAM: &str = "ibt=off";
 
-/// Enumerate the kernel command-line parameters this host should carry, based on its
-/// GPU inventory, each GPU's kernel driver, AND the CPU's CET-IBT capability. Returns
-/// an empty Vec for hosts whose only GPU(s) don't benefit from any cmdline tweak
-/// (e.g. Intel-xe only, no NVIDIA, non-IBT CPU).
+/// Enumerate the GPU/CPU-correctness kernel command-line parameters this host NEEDS.
+/// These are the params whose absence causes broken behavior — NVIDIA needs modeset=1
+/// to avoid simpledrm handoff glitches, amdgpu needs ppfeaturemask for CoreCtrl,
+/// i915 needs enable_guc for hardware video decode, IBT-capable CPUs + NVIDIA need
+/// ibt=off. check_state uses this list to decide Active vs Unapplied.
 ///
-/// This is the SINGLE source of truth consumed by `apply()` and `check_state()`.
+/// NOT included here: the Phase 25 universal `quiet splash` pair. Those are
+/// user-preference (cosmetic boot), not correctness. `apply()` writes them via a
+/// separate additive set so they don't gate Active-state transitions — users who
+/// prefer verbose boot output aren't forced to reconcile with this tool every time.
 pub fn required_kernel_params(gpus: &GpuInventory, cpu_has_ibt: bool) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
     if gpus.has_nvidia() {
@@ -69,6 +79,12 @@ pub fn required_kernel_params(gpus: &GpuInventory, cpu_has_ibt: bool) -> Vec<&'s
     }
     out
 }
+
+/// Phase 25: `quiet splash` pair — user-preference cmdline params that `apply()`
+/// writes alongside the correctness params but that check_state does NOT require.
+/// Writing them is idempotent across GPU vendor; removing them doesn't break the
+/// system (kernel just logs verbosely and plymouth doesn't hook).
+pub const UNIVERSAL_APPLY_PARAMS: &[&str] = &[QUIET_PARAM, SPLASH_PARAM];
 
 // ── Bootloader classification ───────────────────────────────────────────────────────────────
 
@@ -326,7 +342,12 @@ pub fn apply(
     progress: &mut dyn FnMut(&str),
 ) -> Result<ChangeReport> {
     let cpu_has_ibt = crate::core::cpu::cpu_has_ibt(&ctx.paths.cpuinfo);
-    let params = required_kernel_params(gpus, cpu_has_ibt);
+    let mut params = required_kernel_params(gpus, cpu_has_ibt);
+    // Phase 25: append universal quality-of-life params (`quiet splash`). Not part
+    // of `required_kernel_params` on purpose — they're preference, not correctness,
+    // so check_state won't report Unapplied when they're absent. apply() still
+    // writes them because that's the Wiki-recommended "clean boot" default.
+    params.extend(UNIVERSAL_APPLY_PARAMS.iter().copied());
     if params.is_empty() {
         return Ok(ChangeReport::AlreadyApplied {
             detail: "no cmdline params needed for this host's GPU inventory".to_string(),
@@ -1889,12 +1910,16 @@ options rw nomodeset quiet root=/dev/nvme0n1p2
         assert!(p.contains(&NVIDIA_DRM_PARAM));
         assert!(p.contains(&NVIDIA_DRM_FBDEV_PARAM));
         assert!(!p.contains(&IBT_OFF_PARAM));
+        // Phase 25 invariant: `quiet splash` are NOT in the correctness list — they
+        // belong to UNIVERSAL_APPLY_PARAMS, emitted only at apply() time.
+        assert!(!p.contains(&QUIET_PARAM));
+        assert!(!p.contains(&SPLASH_PARAM));
         assert_eq!(p.len(), 2);
     }
 
     #[test]
     fn required_kernel_params_intel_xe_is_empty() {
-        // Phase 15: xe driver handles GuC/HuC natively — no params needed.
+        // Phase 15: xe driver handles GuC/HuC natively — no GPU-specific params.
         assert!(required_kernel_params(&intel_xe_inv(), false).is_empty());
     }
 
@@ -1908,6 +1933,16 @@ options rw nomodeset quiet root=/dev/nvme0n1p2
     fn required_kernel_params_amdgpu_gets_ppfeaturemask() {
         let p = required_kernel_params(&amd_amdgpu_inv(), false);
         assert_eq!(p, vec![AMD_PPFEATUREMASK_PARAM]);
+    }
+
+    #[test]
+    fn universal_apply_params_cover_quiet_and_splash() {
+        // Phase 25 regression guard: the apply()-only additive set must contain
+        // `quiet` and `splash`. If a future refactor replaces UNIVERSAL_APPLY_PARAMS
+        // with a narrower set, this test fires loudly.
+        assert!(UNIVERSAL_APPLY_PARAMS.contains(&QUIET_PARAM));
+        assert!(UNIVERSAL_APPLY_PARAMS.contains(&SPLASH_PARAM));
+        assert_eq!(UNIVERSAL_APPLY_PARAMS.len(), 2);
     }
 
     #[test]

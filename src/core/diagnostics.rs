@@ -304,6 +304,21 @@ pub fn scan(ctx: &Context, gpus: &GpuInventory, form: FormFactor) -> Vec<Finding
         ));
     }
 
+    // Phase 25: goverlay (MangoHud's configuration GUI) is convenient but not
+    // structural. Inform users it exists without forcing it into the Active-state
+    // bar — pre-Phase-25 users who already had a working gaming stack were stuck
+    // seeing the gaming tweak as "Unapplied" because this cosmetic tool was missing.
+    if installed_for_advisories.contains("mangohud")
+        && !installed_for_advisories.contains("goverlay")
+    {
+        findings.push(Finding::info(
+            "goverlay (MangoHud config GUI) not installed",
+            "`goverlay` is an optional GTK front-end for configuring MangoHud overlays \
+             without hand-editing ~/.config/MangoHud/MangoHud.conf. Install with \
+             `sudo pacman -S goverlay` if you'd like a UI.",
+        ));
+    }
+
     // 4. Dangling Vulkan ICD JSONs — library_path points to a file that doesn't exist.
     //    Common cause: user removed an AMDVLK package but a stale JSON stayed behind,
     //    or a manual `ninja install` clobbered and then got rolled back. Not
