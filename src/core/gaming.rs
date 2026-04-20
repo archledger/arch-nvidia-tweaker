@@ -565,8 +565,8 @@ pub fn detect_installed_kernels() -> Vec<String> {
 /// need).
 ///
 /// Any package ending in `-dkms` triggers the mapping — this covers `nvidia-open-dkms`,
-/// `nvidia-dkms`, `nvidia-470xx-dkms`, `nvidia-390xx-dkms`, and any future DKMS driver
-/// added to `resolve_gaming_packages` or `resolve_aur_packages`.
+/// `nvidia-580xx-dkms`, `nvidia-470xx-dkms`, `nvidia-390xx-dkms`, and any future DKMS
+/// driver added to `resolve_gaming_packages` or `resolve_aur_packages`.
 pub fn kernel_header_packages(
     install_queue: &[String],
     installed_kernels: &[String],
@@ -589,7 +589,17 @@ pub fn resolve_aur_packages(gpus: &GpuInventory) -> Vec<String> {
     let gen = nv.nvidia_gen.unwrap_or(NvidiaGeneration::Unknown);
 
     match gen {
-        NvidiaGeneration::Maxwell | NvidiaGeneration::Kepler => vec![
+        // Phase 24 correction: Maxwell / Volta / Pascal share the 580.x AUR branch.
+        // Previously Maxwell was routed to 470xx and Pascal/Volta went to the
+        // (now non-existent) repo nvidia-dkms package. See gpu.rs for the narrative.
+        NvidiaGeneration::Maxwell
+        | NvidiaGeneration::Volta
+        | NvidiaGeneration::Pascal => vec![
+            "nvidia-580xx-dkms".into(),
+            "nvidia-580xx-utils".into(),
+            "lib32-nvidia-580xx-utils".into(),
+        ],
+        NvidiaGeneration::Kepler => vec![
             "nvidia-470xx-dkms".into(),
             "nvidia-470xx-utils".into(),
             "lib32-nvidia-470xx-utils".into(),
@@ -868,13 +878,25 @@ mod tests {
     }
 
     #[test]
-    fn pascal_gets_legacy_nvidia_dkms_not_open() {
+    fn pascal_driver_is_aur_580xx_not_official() {
+        // Phase 24 invariant: Pascal's driver ships via `nvidia-580xx-dkms` in AUR.
+        // Pre-Phase-24 we routed Pascal to `nvidia-dkms` in the official repo — a
+        // package that no longer exists (extra only has nvidia-open-dkms), causing
+        // install failure on every Pascal host.
         let pkgs = resolve_gaming_packages(
             &inv(vec![nvidia(NvidiaGeneration::Pascal, 0x1B06)]),
             FormFactor::Desktop,
         );
-        assert!(pkgs.contains(&"nvidia-dkms".to_string()));
+        // Neither the ghost `nvidia-dkms` nor `nvidia-open-dkms` (open modules need
+        // GSP firmware = Turing+) should appear in the official list.
+        assert!(
+            !pkgs.iter().any(|p| p == "nvidia-dkms"),
+            "Pascal must NOT route to the defunct nvidia-dkms: {pkgs:?}"
+        );
         assert!(!pkgs.iter().any(|p| p == "nvidia-open-dkms"));
+        // And the AUR list handles the real install.
+        let aur = resolve_aur_packages(&inv(vec![nvidia(NvidiaGeneration::Pascal, 0x1B06)]));
+        assert!(aur.iter().any(|p| p == "nvidia-580xx-dkms"));
     }
 
     #[test]
@@ -883,12 +905,37 @@ mod tests {
             &inv(vec![nvidia(NvidiaGeneration::Maxwell, 0x13C2)]),
             FormFactor::Desktop,
         );
+        // Phase 24: Maxwell is now on the 580xx branch (not 470xx). Official list
+        // must not contain either the old or new AUR driver.
         assert!(!pkgs.iter().any(|p| p.contains("470xx")));
+        assert!(!pkgs.iter().any(|p| p.contains("580xx")));
     }
 
     #[test]
-    fn maxwell_aur_list_contains_470xx_dkms_and_utils() {
-        let aur = resolve_aur_packages(&inv(vec![nvidia(NvidiaGeneration::Maxwell, 0x13C2)]));
+    fn maxwell_volta_pascal_share_580xx_aur_branch() {
+        // Phase 24 correction: Maxwell, Volta, and Pascal all share the 580.x legacy
+        // driver branch via `nvidia-580xx-dkms` (AUR, maintained by ventureo/CachyOS).
+        // Pre-Phase-24 Maxwell was routed to 470xx (Kepler's branch) and Pascal/Volta
+        // went to the non-existent official `nvidia-dkms` — both broken.
+        for gen in [
+            NvidiaGeneration::Maxwell,
+            NvidiaGeneration::Volta,
+            NvidiaGeneration::Pascal,
+        ] {
+            let aur = resolve_aur_packages(&inv(vec![nvidia(gen, 0x13C2)]));
+            assert!(
+                aur.iter().any(|p| p == "nvidia-580xx-dkms"),
+                "{gen:?} must route to nvidia-580xx-dkms, got: {aur:?}"
+            );
+            assert!(aur.iter().any(|p| p == "nvidia-580xx-utils"));
+            assert!(aur.iter().any(|p| p == "lib32-nvidia-580xx-utils"));
+        }
+    }
+
+    #[test]
+    fn kepler_stays_on_470xx_branch() {
+        // Kepler is a proper subset of what 470xx supports and doesn't move to 580.
+        let aur = resolve_aur_packages(&inv(vec![nvidia(NvidiaGeneration::Kepler, 0x100C)]));
         assert!(aur.iter().any(|p| p == "nvidia-470xx-dkms"));
         assert!(aur.iter().any(|p| p == "nvidia-470xx-utils"));
         assert!(aur.iter().any(|p| p == "lib32-nvidia-470xx-utils"));
@@ -1334,11 +1381,11 @@ linux-tkg-bmq
     #[test]
     fn kernel_header_mapping_triggered_by_any_dkms_suffix() {
         // The `-dkms` suffix check must catch every driver variant: nvidia-open-dkms,
-        // nvidia-dkms, nvidia-470xx-dkms, nvidia-390xx-dkms.
+        // nvidia-580xx-dkms, nvidia-470xx-dkms, nvidia-390xx-dkms.
         let kernels = vec!["linux".to_string()];
         for driver in [
             "nvidia-open-dkms",
-            "nvidia-dkms",
+            "nvidia-580xx-dkms",
             "nvidia-470xx-dkms",
             "nvidia-390xx-dkms",
         ] {

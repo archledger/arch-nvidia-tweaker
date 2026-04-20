@@ -193,9 +193,15 @@ pub fn scan(ctx: &Context, gpus: &GpuInventory, form: FormFactor) -> Vec<Finding
             // AND the nvidia module hasn't loaded — otherwise SB is likely fine.
             let nvidia_loaded = ctx.paths.sys_module.join("nvidia").exists();
             let installed = pacman_installed_set();
-            let dkms_installed = ["nvidia-open-dkms", "nvidia-dkms", "nvidia-470xx-dkms", "nvidia-390xx-dkms"]
-                .iter()
-                .any(|p| installed.contains(*p));
+            let dkms_installed = [
+                "nvidia-open-dkms",
+                "nvidia-dkms",
+                "nvidia-580xx-dkms",
+                "nvidia-470xx-dkms",
+                "nvidia-390xx-dkms",
+            ]
+            .iter()
+            .any(|p| installed.contains(*p));
             if dkms_installed && !nvidia_loaded {
                 findings.push(Finding::warn(
                     "Secure Boot is enabled and NVIDIA module is not loaded",

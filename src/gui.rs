@@ -444,7 +444,7 @@ fn format_nvidia_detail(gpus: &GpuInventory) -> String {
 }
 
 /// NVIDIA driver-package recommendation line. Resolves the per-architecture driver
-/// (nvidia-open-dkms for Turing+, nvidia-dkms for Pascal/Volta, AUR legacy for
+/// (nvidia-open-dkms for Turing+, nvidia-580xx-dkms AUR for Maxwell/Volta/Pascal, AUR legacy for
 /// Maxwell/Kepler/Fermi). Empty when there's no NVIDIA GPU or no recommendation.
 fn format_nvidia_driver_recommendation(gpus: &GpuInventory) -> String {
     let Some(nv) = gpus.primary_nvidia() else {

@@ -149,15 +149,24 @@ impl GpuInfo {
                 source: PackageSource::Official,
                 note: "open kernel modules (GSP-based, recommended from 560+)",
             },
-            NvidiaGeneration::Volta | NvidiaGeneration::Pascal => NvidiaDriverRecommendation {
-                package: "nvidia-dkms",
-                source: PackageSource::Official,
-                note: "legacy proprietary tree; NVIDIA 590 dropped Pascal — pin an older branch if needed",
+            // Phase 24 correction: `nvidia-dkms` is no longer in Arch's `extra` repo
+            // (only `nvidia-open-dkms` remains). Pascal / Volta / Maxwell share the
+            // 580.x driver branch via the `nvidia-580xx-dkms` AUR package (maintained
+            // by ventureo / CachyOS team, verified 2026-04). 580 is the last NVIDIA
+            // branch with Pascal support — 595 dropped it. Open kernel modules require
+            // GSP firmware which only exists from Turing onward, so these gens also
+            // can't use the open variant.
+            NvidiaGeneration::Volta
+            | NvidiaGeneration::Pascal
+            | NvidiaGeneration::Maxwell => NvidiaDriverRecommendation {
+                package: "nvidia-580xx-dkms",
+                source: PackageSource::Aur,
+                note: "legacy 580-series driver (Maxwell/Volta/Pascal); AUR only — nvidia-dkms is no longer in official repos",
             },
-            NvidiaGeneration::Maxwell | NvidiaGeneration::Kepler => NvidiaDriverRecommendation {
+            NvidiaGeneration::Kepler => NvidiaDriverRecommendation {
                 package: "nvidia-470xx-dkms",
                 source: PackageSource::Aur,
-                note: "legacy 470-series driver (Maxwell/Kepler); AUR only",
+                note: "legacy 470-series driver (Kepler); AUR only",
             },
             NvidiaGeneration::Fermi => NvidiaDriverRecommendation {
                 package: "nvidia-390xx-dkms",
@@ -466,7 +475,9 @@ mod tests {
     }
 
     #[test]
-    fn recommended_package_for_maxwell_is_aur_legacy() {
+    fn recommended_package_for_maxwell_is_580xx_aur() {
+        // Phase 24: Maxwell moved from the 470xx branch to 580xx (the branch that
+        // last supported Maxwell/Volta/Pascal before NVIDIA 595 dropped them).
         let g = GpuInfo {
             vendor: GpuVendor::Nvidia,
             vendor_id: 0x10de,
@@ -479,7 +490,7 @@ mod tests {
             nvidia_gen: Some(NvidiaGeneration::Maxwell),
         };
         let rec = g.recommended_nvidia_package().unwrap();
-        assert_eq!(rec.package, "nvidia-470xx-dkms");
+        assert_eq!(rec.package, "nvidia-580xx-dkms");
         assert_eq!(rec.source, PackageSource::Aur);
     }
 

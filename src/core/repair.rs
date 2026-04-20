@@ -59,9 +59,15 @@ const NVIDIA_PRIME_PACKAGE: &str = "nvidia-prime";
 /// NVIDIA driver packages that register DKMS modules. If any of these is in pacman's
 /// installed set AND `/sys/module/nvidia/` doesn't exist on the running kernel, DKMS
 /// silently failed and a rebuild is needed.
+///
+/// Phase 24: added `nvidia-580xx-dkms` (AUR) for Maxwell/Volta/Pascal. Kept
+/// `nvidia-dkms` in the list even though that package is gone from Arch's `extra` —
+/// some users still have it installed from pre-Phase-24 archgpu runs and we want to
+/// detect the stale DKMS module situation there too.
 const NVIDIA_DKMS_PACKAGES: &[&str] = &[
     "nvidia-open-dkms",
     "nvidia-dkms",
+    "nvidia-580xx-dkms",
     "nvidia-470xx-dkms",
     "nvidia-390xx-dkms",
 ];

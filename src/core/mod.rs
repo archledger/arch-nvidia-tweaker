@@ -6,6 +6,7 @@ pub mod diagnostics;
 pub mod gaming;
 pub mod gpu;
 pub mod hardware;
+pub mod nvidia;
 pub mod power;
 pub mod prime;
 pub mod rendering;
