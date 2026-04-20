@@ -217,6 +217,10 @@ pub fn run() -> Result<()> {
                 power: ui.get_opt_power(),
                 gaming: ui.get_opt_gaming(),
                 repair: ui.get_opt_repair(),
+                // Phase 28: cleanup is destructive — never wired to a default
+                // checkbox. The Phase 30 GUI PR will add a dedicated card with
+                // the two-click Preview→Confirm pattern.
+                cleanup: false,
             };
             if !actions.any() {
                 append_log(&ui, "No actions selected — nothing to do.");

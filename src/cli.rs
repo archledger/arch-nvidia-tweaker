@@ -49,7 +49,16 @@ pub struct Cli {
     #[arg(long)]
     pub apply_repair: bool,
 
-    /// Run every apply action
+    /// Phase 28: reverse-cleanup pass — removes hardware-absent vendor packages,
+    /// defunct (Mesa-2026-bundled) packages, legacy Xorg DDX drivers, AMDVLK
+    /// when RADV is also installed. Writes a pre-cleanup snapshot to
+    /// /var/backups/archgpu/pre-cleanup-<ts>.txt before removing anything.
+    /// Pair with --dry-run to see the plan without removing.
+    #[arg(long)]
+    pub apply_cleanup: bool,
+
+    /// Run every apply action (NOTE: does NOT include --apply-cleanup; cleanup
+    /// is destructive and explicit-opt-in only)
     #[arg(long)]
     pub apply_all: bool,
 
@@ -73,6 +82,7 @@ impl Cli {
             || self.apply_power
             || self.apply_gaming
             || self.apply_repair
+            || self.apply_cleanup
             || self.apply_all
     }
 
@@ -94,7 +104,11 @@ impl Cli {
 
     fn actions(&self) -> Actions {
         if self.apply_all {
-            return Actions::all();
+            // --apply-all + --apply-cleanup is a valid combo — the user explicitly
+            // opted both in. all() leaves cleanup off; merge it in here.
+            let mut a = Actions::all();
+            a.cleanup = self.apply_cleanup;
+            return a;
         }
         Actions {
             wayland: self.apply_wayland,
@@ -102,6 +116,7 @@ impl Cli {
             power: self.apply_power,
             gaming: self.apply_gaming,
             repair: self.apply_repair,
+            cleanup: self.apply_cleanup,
         }
     }
 }

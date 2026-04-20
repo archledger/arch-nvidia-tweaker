@@ -86,7 +86,11 @@ sudo archgpu --apply-bootloader   # GPU-aware cmdline + per-bootloader regenerat
 sudo archgpu --apply-power        # suspend services + modprobe + nouveau blacklist
 sudo archgpu --apply-gaming --yes # multilib + Vulkan + gamemode + mangohud (+ AUR if needed)
 
-# All at once
+# Reverse cleanup (Phase 28) — destructive, opt-in only, NOT in --apply-all
+sudo archgpu --dry-run --apply-cleanup    # PREVIEW: list what would be removed and why
+sudo archgpu --apply-cleanup --yes        # actually remove (writes pre-cleanup snapshot first)
+
+# All at once (does NOT include --apply-cleanup; pass it explicitly to combine)
 sudo archgpu --apply-all --yes
 ```
 
@@ -122,6 +126,7 @@ The live-kernel probe reads `/sys/module/nvidia_drm/parameters/{modeset,fbdev}`,
 | `src/core/aur.rs` | Helper detection (yay / paru), `invoking_user` via `SUDO_USER` / `PKEXEC_UID` + allowlist, manual `yay-bin` bootstrap (git clone + `makepkg` as user → `pacman -U` as root), `SUDO_ASKPASS` routing per DE |
 | `src/core/prime.rs` | Xorg `OutputClass` drop-in for hybrid GPUs (skipped when nvidia-utils ships its own) |
 | `src/core/diagnostics.rs` | 14-point read-only scanner, `Finding{severity,title,detail,fix_hint}`, surfaces gaming + wayland sanitation warnings |
+| `src/core/cleanup.rs` (Phase 28) | Reverse-cleanup engine: `compute_removal_plan(gpus, installed)` classifies each candidate as HardwareAbsent / Defunct / LegacyDeprecated / ConflictingChoice. `apply()` writes a pre-cleanup `pacman -Qq` snapshot to `/var/backups/archgpu/pre-cleanup-<ts>.txt` before any `pacman -Rns`. NEVER_REMOVE allowlist as defense-in-depth. Opt-in only — never in `Actions::all()` or `auto::recommend`. |
 | `src/core/auto.rs` | `recommend(ctx, form, gpus) -> Actions` — cross-references hardware applicability AND `check_state().is_unapplied()`; used both at GUI startup and by the Auto-Optimize hero |
 | `src/core/state.rs` | `TweakState::{Active, PendingReboot, Unapplied, Incompatible}` + helpers |
 | `src/utils/process.rs` | `run_streaming(cmd, on_line)` — pipes stdout+stderr through mpsc into an `FnMut(&str)` |

@@ -32,6 +32,10 @@ pub fn recommend(ctx: &Context, form: FormFactor, gpus: &GpuInventory) -> Action
         // Phase 20: Auto-Optimize recommends repair whenever the scanner finds stale
         // artifacts. Universally applicable, so the only gate is state.
         repair: repair::check_state(ctx, gpus, form).is_unapplied(),
+        // Phase 28 invariant: cleanup is destructive — auto-recommend never
+        // enables it. User must opt in via `--apply-cleanup` or the GUI's
+        // explicit two-click Preview→Confirm flow.
+        cleanup: false,
     }
 }
 
@@ -53,6 +57,12 @@ pub fn recommended_names(actions: Actions) -> Vec<&'static str> {
     }
     if actions.gaming {
         out.push("gaming");
+    }
+    // Phase 28: cleanup runs LAST in dispatch order — match that here. Note
+    // that auto::recommend never enables cleanup itself; it appears in this
+    // list only when a CLI flag or GUI checkbox set it explicitly.
+    if actions.cleanup {
+        out.push("cleanup");
     }
     out
 }
@@ -214,6 +224,7 @@ mod tests {
             power: true,
             gaming: false,
             repair: false,
+            cleanup: false,
         };
         assert_eq!(recommended_names(actions), vec!["wayland", "power"]);
     }
@@ -228,7 +239,36 @@ mod tests {
             power: false,
             gaming: true,
             repair: true,
+            cleanup: false,
         };
         assert_eq!(recommended_names(actions), vec!["repair", "wayland", "gaming"]);
+    }
+
+    #[test]
+    fn auto_recommend_never_includes_cleanup() {
+        // Phase 28 invariant: cleanup is destructive and explicit-opt-in only.
+        // Auto-Optimize must never silently flag it on. Test on a host where the
+        // pacman check_state would otherwise possibly return Unapplied.
+        let tmp = tempdir().unwrap();
+        seed_pacman(tmp.path(), MULTILIB_OFF);
+        seed_cmdline_uki(tmp.path(), "rw quiet\n");
+        let ctx = Context::rooted_for_test(tmp.path(), ExecutionMode::DryRun);
+        let rec = recommend(&ctx, FormFactor::Laptop, &nvidia_hybrid());
+        assert!(!rec.cleanup, "auto-recommend must never enable cleanup");
+    }
+
+    #[test]
+    fn recommended_names_includes_cleanup_when_explicitly_set() {
+        // Cleanup CAN be in recommended_names (e.g. user toggled it manually);
+        // it just never gets flipped on by auto::recommend itself.
+        let actions = Actions {
+            wayland: false,
+            bootloader: false,
+            power: false,
+            gaming: false,
+            repair: false,
+            cleanup: true,
+        };
+        assert_eq!(recommended_names(actions), vec!["cleanup"]);
     }
 }

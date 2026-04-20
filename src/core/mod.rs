@@ -1,6 +1,7 @@
 pub mod aur;
 pub mod auto;
 pub mod bootloader;
+pub mod cleanup;
 pub mod cpu;
 pub mod diagnostics;
 pub mod gaming;
@@ -171,9 +172,18 @@ pub struct Actions {
     /// failed to build. Runs BEFORE the other actions so their state probes see a
     /// clean system. Idempotent — on a healthy host it's a no-op.
     pub repair: bool,
+    /// Phase 28: reverse cleanup — removes hardware-absent vendor packages, defunct
+    /// (Mesa-2026-bundled) packages, legacy Xorg DDX drivers, and AMDVLK-when-RADV
+    /// conflicts. **Opt-in only**: not in `Actions::all()` and not surfaced by
+    /// `auto::recommend`. Always writes a pre-cleanup snapshot before removing.
+    pub cleanup: bool,
 }
 
 impl Actions {
+    /// Phase 28 invariant: `cleanup` is **NOT** in `all()`. Mass `--apply-all` runs
+    /// must be safe to invoke on any host without ever removing packages the user
+    /// might want kept (e.g. they're setting up cross-compilation, or planning to
+    /// add a card from another vendor next week). Cleanup is explicit-opt-in only.
     pub fn all() -> Self {
         Self {
             wayland: true,
@@ -181,11 +191,17 @@ impl Actions {
             power: true,
             gaming: true,
             repair: true,
+            cleanup: false,
         }
     }
 
     pub fn any(&self) -> bool {
-        self.wayland || self.bootloader || self.power || self.gaming || self.repair
+        self.wayland
+            || self.bootloader
+            || self.power
+            || self.gaming
+            || self.repair
+            || self.cleanup
     }
 }
 
@@ -246,6 +262,14 @@ pub fn run_actions(
     if actions.gaming {
         for r in gaming::apply(ctx, gpus, form, assume_yes, progress)? {
             out.push(("gaming", r));
+        }
+    }
+    // Phase 28: cleanup runs LAST so essentials/gaming have a chance to install
+    // the packages they want first; cleanup then removes the leftovers that
+    // don't belong on this host.
+    if actions.cleanup {
+        for r in cleanup::apply(ctx, gpus, assume_yes, progress)? {
+            out.push(("cleanup", r));
         }
     }
     Ok(out)
