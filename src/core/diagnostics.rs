@@ -637,16 +637,32 @@ fn check_gaming_tools(out: &mut Vec<Finding>) {
 }
 
 fn check_user_video_group(out: &mut Vec<Finding>) {
+    // Phase 27: probe both `video` AND `render` — `render` (the modern group that
+    // owns `/dev/dri/renderD*`) is missing-by-default on most Arch installs and is
+    // the silent cause of VA-API and OpenCL falling back to software rendering.
+    // Surface as a Warning (not Info) when missing, and point at the auto-fix.
     let Ok(got) = Command::new("groups").output() else {
         return;
     };
     let groups = String::from_utf8_lossy(&got.stdout);
-    if groups.split_whitespace().any(|g| g == "video") {
-        out.push(Finding::info("current user in `video` group", ""));
-    } else {
+    let names: Vec<&str> = groups.split_whitespace().collect();
+    let missing: Vec<&'static str> = ["video", "render"]
+        .iter()
+        .copied()
+        .filter(|g| !names.contains(g))
+        .collect();
+    if missing.is_empty() {
         out.push(Finding::info(
-            "current user NOT in `video` group",
-            "Some GPU utilities (brightness, NVIDIA control via non-X backends) need this.",
+            "current user in `video` and `render` groups",
+            "",
+        ));
+    } else {
+        out.push(Finding::warn(
+            format!("current user NOT in {}", missing.join(" + ")),
+            "DRM device access requires both groups: `video` for /dev/dri/card* (mode-set + GL); \
+             `render` for /dev/dri/renderD* (compute, VA-API, some Vulkan). Missing `render` is the \
+             usual cause of VA-API silently falling back to software decode.",
+            "Run `archgpu --apply-groups` (then log out and back in).",
         ));
     }
 }

@@ -6,6 +6,7 @@ pub mod diagnostics;
 pub mod essentials;
 pub mod gaming;
 pub mod gpu;
+pub mod groups;
 pub mod hardware;
 pub mod nvidia;
 pub mod power;
@@ -60,6 +61,9 @@ pub struct SystemPaths {
     // <sys_module>/<module>/ directory means the kernel module isn't loaded, which is the
     // same signal as "module loaded but parameter reports wrong value" for our purposes.
     pub sys_module: PathBuf,
+    // Phase 27: `/etc/group` — authoritative static group membership (the file logind
+    // dynamic-seat membership LAYERS on top of, not a replacement for).
+    pub group_file: PathBuf,
     // Phase 11: multi-bootloader paths
     pub grub_default: PathBuf,
     pub grub_cfg: PathBuf,
@@ -88,6 +92,7 @@ impl SystemPaths {
             vulkan_icd_dir: PathBuf::from("/usr/share/vulkan/icd.d"),
             backup_dir: PathBuf::from("/var/backups/archgpu"),
             sys_module: PathBuf::from("/sys/module"),
+            group_file: PathBuf::from("/etc/group"),
             grub_default: PathBuf::from("/etc/default/grub"),
             grub_cfg: PathBuf::from("/boot/grub/grub.cfg"),
             sdb_loader_conf: PathBuf::from("/boot/loader/loader.conf"),
@@ -122,6 +127,7 @@ impl SystemPaths {
             vulkan_icd_dir: root.join("usr/share/vulkan/icd.d"),
             backup_dir: root.join("var/backups/archgpu"),
             sys_module: root.join("sys/module"),
+            group_file: root.join("etc/group"),
             grub_default: root.join("etc/default/grub"),
             grub_cfg: root.join("boot/grub/grub.cfg"),
             sdb_loader_conf: root.join("boot/loader/loader.conf"),
@@ -177,6 +183,10 @@ pub struct Actions {
     /// drivers, diagnostic tools (vulkan-tools / clinfo / libva-utils / vdpauinfo).
     /// Non-gaming; runs before `gaming` so that stack sees a healthy base.
     pub essentials: bool,
+    /// Phase 27: ensure the invoking user is a member of `video` + `render` via
+    /// `usermod -aG`. Requires a re-login (not a reboot) to take effect in the
+    /// current session — surfaced in the apply-time detail message.
+    pub groups: bool,
 }
 
 impl Actions {
@@ -188,6 +198,7 @@ impl Actions {
             gaming: true,
             repair: true,
             essentials: true,
+            groups: true,
         }
     }
 
@@ -198,6 +209,7 @@ impl Actions {
             || self.gaming
             || self.repair
             || self.essentials
+            || self.groups
     }
 }
 
@@ -221,6 +233,14 @@ pub fn run_actions(
     if actions.repair {
         for r in repair::apply(ctx, gpus, form, assume_yes, progress)? {
             out.push(("repair", r));
+        }
+    }
+
+    // Phase 27: group provisioning runs first after repair — cheap user-state
+    // cleanup before pacman-heavy stages.
+    if actions.groups {
+        for r in groups::apply(ctx, assume_yes, progress)? {
+            out.push(("groups", r));
         }
     }
 

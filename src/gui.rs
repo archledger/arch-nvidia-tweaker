@@ -217,10 +217,9 @@ pub fn run() -> Result<()> {
                 power: ui.get_opt_power(),
                 gaming: ui.get_opt_gaming(),
                 repair: ui.get_opt_repair(),
-                // Phase 26: essentials toggle isn't yet wired into the Slint UI
-                // (deferred to the GUI consolidation PR). Until then the CLI
-                // `--apply-essentials` and `--apply-all` paths remain authoritative.
+                // Phase 30: replaced below in the Slint binding pass
                 essentials: false,
+                groups: false,
             };
             if !actions.any() {
                 append_log(&ui, "No actions selected — nothing to do.");

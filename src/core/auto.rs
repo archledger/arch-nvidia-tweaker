@@ -1,5 +1,6 @@
 use crate::core::gaming;
 use crate::core::gpu::GpuInventory;
+use crate::core::groups;
 use crate::core::hardware::FormFactor;
 use crate::core::{bootloader, essentials, power, repair, wayland, Actions, Context};
 
@@ -35,6 +36,9 @@ pub fn recommend(ctx: &Context, form: FormFactor, gpus: &GpuInventory) -> Action
         // Phase 26: essentials is universal — every host benefits from the Vulkan
         // loader + Mesa + split firmware + diagnostic userspace. State-gated only.
         essentials: essentials::check_state(ctx, gpus).is_unapplied(),
+        // Phase 27: groups is universal for any host with a non-root invoking user.
+        // Incompatible (no SUDO_USER / PKEXEC_UID) → not recommended.
+        groups: groups::check_state(ctx).is_unapplied(),
     }
 }
 
@@ -45,8 +49,13 @@ pub fn recommended_names(actions: Actions) -> Vec<&'static str> {
     if actions.repair {
         out.push("repair");
     }
-    // Phase 26: essentials sits between repair and the vendor-specific stages
-    // (same ordering as run_actions dispatch).
+    // Phase 27: groups runs immediately after repair (cheap user-state cleanup
+    // before pacman-heavy stages).
+    if actions.groups {
+        out.push("groups");
+    }
+    // Phase 26: essentials sits before vendor-specific stages so they see a
+    // healthy Vulkan/Mesa base.
     if actions.essentials {
         out.push("essentials");
     }
@@ -223,6 +232,7 @@ mod tests {
             gaming: false,
             repair: false,
             essentials: false,
+            groups: false,
         };
         assert_eq!(recommended_names(actions), vec!["wayland", "power"]);
     }
@@ -238,15 +248,16 @@ mod tests {
             gaming: true,
             repair: true,
             essentials: false,
+            groups: false,
         };
         assert_eq!(recommended_names(actions), vec!["repair", "wayland", "gaming"]);
     }
 
     #[test]
-    fn recommended_names_places_essentials_between_repair_and_wayland() {
-        // Phase 26: essentials runs after repair but before vendor-specific stages.
-        // Order must match run_actions dispatch so the UI log and actual execution
-        // tell the same story.
+    fn recommended_names_orders_repair_groups_essentials_then_vendor() {
+        // Phase 30: stacked ordering invariant — repair first, then groups
+        // (cheap user-state cleanup), then essentials (Mesa/Vulkan/firmware),
+        // then the vendor-specific stages.
         let actions = Actions {
             wayland: true,
             bootloader: false,
@@ -254,10 +265,11 @@ mod tests {
             gaming: true,
             repair: true,
             essentials: true,
+            groups: true,
         };
         assert_eq!(
             recommended_names(actions),
-            vec!["repair", "essentials", "wayland", "gaming"]
+            vec!["repair", "groups", "essentials", "wayland", "gaming"]
         );
     }
 }

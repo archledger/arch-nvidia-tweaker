@@ -56,6 +56,12 @@ pub struct Cli {
     #[arg(long)]
     pub apply_essentials: bool,
 
+    /// Phase 27: provision the invoking user's membership in `video` and `render`
+    /// via `usermod -aG video,render <user>`. Requires re-login (not reboot) for
+    /// the change to reach the current session.
+    #[arg(long)]
+    pub apply_groups: bool,
+
     /// Run every apply action
     #[arg(long)]
     pub apply_all: bool,
@@ -81,6 +87,7 @@ impl Cli {
             || self.apply_gaming
             || self.apply_repair
             || self.apply_essentials
+            || self.apply_groups
             || self.apply_all
     }
 
@@ -111,6 +118,7 @@ impl Cli {
             gaming: self.apply_gaming,
             repair: self.apply_repair,
             essentials: self.apply_essentials,
+            groups: self.apply_groups,
         }
     }
 }
