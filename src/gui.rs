@@ -217,9 +217,10 @@ pub fn run() -> Result<()> {
                 power: ui.get_opt_power(),
                 gaming: ui.get_opt_gaming(),
                 repair: ui.get_opt_repair(),
-                // Phase 30: replaced below in the Slint binding pass
+                // Phase 30: replaced with proper Slint bindings later in this PR
                 essentials: false,
                 groups: false,
+                cleanup: false,
             };
             if !actions.any() {
                 append_log(&ui, "No actions selected — nothing to do.");

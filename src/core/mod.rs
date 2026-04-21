@@ -1,6 +1,7 @@
 pub mod aur;
 pub mod auto;
 pub mod bootloader;
+pub mod cleanup;
 pub mod cpu;
 pub mod diagnostics;
 pub mod essentials;
@@ -187,9 +188,18 @@ pub struct Actions {
     /// `usermod -aG`. Requires a re-login (not a reboot) to take effect in the
     /// current session — surfaced in the apply-time detail message.
     pub groups: bool,
+    /// Phase 28: reverse cleanup — removes hardware-absent vendor packages, defunct
+    /// (Mesa-2026-bundled) packages, legacy Xorg DDX drivers, and AMDVLK-when-RADV
+    /// conflicts. **Opt-in only**: not in `Actions::all()` and not surfaced by
+    /// `auto::recommend`. Always writes a pre-cleanup snapshot before removing.
+    pub cleanup: bool,
 }
 
 impl Actions {
+    /// Phase 28 invariant: `cleanup` is **NOT** in `all()`. Mass `--apply-all` runs
+    /// must be safe to invoke on any host without ever removing packages the user
+    /// might want kept (e.g. they're setting up cross-compilation, or planning to
+    /// add a card from another vendor next week). Cleanup is explicit-opt-in only.
     pub fn all() -> Self {
         Self {
             wayland: true,
@@ -199,6 +209,7 @@ impl Actions {
             repair: true,
             essentials: true,
             groups: true,
+            cleanup: false,
         }
     }
 
@@ -210,6 +221,7 @@ impl Actions {
             || self.repair
             || self.essentials
             || self.groups
+            || self.cleanup
     }
 }
 
@@ -287,6 +299,14 @@ pub fn run_actions(
     if actions.gaming {
         for r in gaming::apply(ctx, gpus, form, assume_yes, progress)? {
             out.push(("gaming", r));
+        }
+    }
+    // Phase 28: cleanup runs LAST so essentials/gaming have a chance to install
+    // the packages they want first; cleanup then removes the leftovers that
+    // don't belong on this host.
+    if actions.cleanup {
+        for r in cleanup::apply(ctx, gpus, assume_yes, progress)? {
+            out.push(("cleanup", r));
         }
     }
     Ok(out)
