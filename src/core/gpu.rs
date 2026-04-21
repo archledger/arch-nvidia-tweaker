@@ -60,9 +60,12 @@ impl NvidiaGeneration {
         }
     }
 
-    /// Turing (2018) and newer support the "open" kernel modules (GSP-RM). From NVIDIA 590 (early
-    /// 2026) the proprietary tree dropped Pascal support; the main `nvidia` and `nvidia-dkms`
-    /// packages now ship the open modules under the same names.
+    /// Turing (2018) and newer support the "open" kernel modules (GSP-RM). As of the
+    /// current NVIDIA 595 production branch (early 2026), the proprietary tree has
+    /// dropped Pascal support, and Arch's `[extra]` repo ships only `nvidia-open` /
+    /// `nvidia-open-dkms` — the old `nvidia` / `nvidia-dkms` package names are gone
+    /// from the official repo (legacy branches live in AUR: `nvidia-580xx-dkms`
+    /// covers Maxwell/Volta/Pascal, 470xx covers Kepler, 390xx covers Fermi).
     pub fn supports_open_modules(self) -> bool {
         matches!(
             self,

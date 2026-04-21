@@ -56,19 +56,9 @@ pub enum Verification {
     NotApplicable,
 }
 
-impl Verification {
-    /// Short stable label for this outcome — used by the future Phase 30 GUI to
-    /// pick a per-recipe badge color/icon (`#[allow(dead_code)]` until then).
-    #[allow(dead_code)]
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::LiveVerified(_) => "live-verified",
-            Self::PendingReboot(_) => "pending-reboot",
-            Self::Failed(_) => "verification-failed",
-            Self::NotApplicable => "n/a",
-        }
-    }
-}
+// Phase 31 audit: `Verification::label` removed — Phase 30 GUI never consumed it,
+// and the console summary already surfaces the outcome via ✓/⟳/✗ prefixes in
+// `RecipeReport::summary`. Re-add when an actual consumer materializes.
 
 #[derive(Debug, Clone)]
 pub struct RecipeReport {
@@ -175,9 +165,14 @@ fn report_to_change(r: RecipeReport) -> ChangeReport {
             detail: format!("[{}] reboot required — {d}", r.id),
             backup: None,
         },
-        (true, Verification::Failed(d)) => ChangeReport::Applied {
-            detail: format!("[{}] fix attempted but verify failed — {d}", r.id),
-            backup: None,
+        // Phase 31 audit M4: a failed verify is NOT a successful Apply. Mapping
+        // it to `ChangeReport::Applied` misled downstream UI that counts
+        // successful actions and produced "green" outcomes for fixes that
+        // actually broke. Route through `Planned` + "fix attempted but verify
+        // failed" so the summary clearly flags it as a non-success state. The
+        // detail is already attention-grabbing (✗ prefix + "verify failed").
+        (true, Verification::Failed(d)) => ChangeReport::Planned {
+            detail: format!("[{}] ✗ fix attempted but verify failed — {d}", r.id),
         },
     }
 }
@@ -445,10 +440,30 @@ impl Recipe for DanglingVulkanIcd {
         }
 
         let mut removed: Vec<PathBuf> = Vec::new();
+        let mut skipped_symlinks: Vec<PathBuf> = Vec::new();
         for issue in &issues {
             // Only auto-remove DanglingAbsolutePath. Unparseable JSON might be a temporary
             // package-install race; safer to surface it for the user to inspect.
             if !matches!(issue.problem, IcdProblem::DanglingAbsolutePath(_)) {
+                continue;
+            }
+            // Phase 31 audit H4: if the ICD JSON is a symlink, skip the backup
+            // copy (which would follow the symlink via std::fs::copy). A malicious
+            // AUR package could ship `evil.json` as a symlink to `/etc/shadow`
+            // and the backup would end up world-readable in /var/backups/archgpu.
+            // The JSON itself is still safe to delete — `remove_file` removes
+            // the link, not the target.
+            let is_symlink = std::fs::symlink_metadata(&issue.json_path)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
+            if is_symlink {
+                std::fs::remove_file(&issue.json_path)?;
+                progress(&format!(
+                    "[troubleshoot] removed symlinked ICD (no backup): {}",
+                    issue.json_path.display()
+                ));
+                skipped_symlinks.push(issue.json_path.clone());
+                removed.push(issue.json_path.clone());
                 continue;
             }
             let _ = backup_to_dir(&issue.json_path, &ctx.paths.backup_dir)?;
@@ -466,7 +481,17 @@ impl Recipe for DanglingVulkanIcd {
             .filter(|i| matches!(i.problem, IcdProblem::DanglingAbsolutePath(_)))
             .collect();
         let verification = if still_dangling.is_empty() {
-            Verification::LiveVerified(format!("removed {} orphan ICD file(s)", removed.len()))
+            let detail = if skipped_symlinks.is_empty() {
+                format!("removed {} orphan ICD file(s)", removed.len())
+            } else {
+                format!(
+                    "removed {} orphan ICD file(s); {} were symlinks and were removed without \
+                     backup (target may be sensitive — see progress log for paths)",
+                    removed.len(),
+                    skipped_symlinks.len()
+                )
+            };
+            Verification::LiveVerified(detail)
         } else {
             Verification::Failed(format!(
                 "still {} dangling JSON(s) after fix — manual inspection required",

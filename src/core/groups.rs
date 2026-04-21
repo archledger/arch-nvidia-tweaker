@@ -153,25 +153,10 @@ fn parse_group_line(line: &str) -> Option<(&str, Vec<&str>)> {
     Some((name, members))
 }
 
-/// Read the invoking user's *live* supplementary groups for the current process
-/// tree. Used to produce a richer detail message after `apply()` that explains
-/// whether the change is already live (uncommon — only if the user started the
-/// session after a prior `usermod`) or still requires re-login.
-#[allow(dead_code)]
-pub fn live_session_has_groups() -> bool {
-    let Some(user) = invoking_user() else {
-        return false;
-    };
-    let Ok(out) = Command::new("id").args(["-Gn", &user]).output() else {
-        return false;
-    };
-    if !out.status.success() {
-        return false;
-    }
-    let got = String::from_utf8_lossy(&out.stdout);
-    let names: Vec<&str> = got.split_whitespace().collect();
-    REQUIRED_GROUPS.iter().all(|g| names.contains(g))
-}
+// Phase 31 audit: `live_session_has_groups` removed — it was `#[allow(dead_code)]`
+// from Phase 27 with a comment about future use, but no caller materialized in
+// Phase 30 and the "log out and back in" apply-time message works without it.
+// Re-add only when there's an actual consumer.
 
 #[cfg(test)]
 mod tests {

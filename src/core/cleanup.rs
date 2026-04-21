@@ -66,12 +66,14 @@ pub const NEVER_REMOVE: &[&str] = &[
     "linux-rt",
     "linux-rt-lts",
     "linux-firmware",
-    // Phase 30 audit M1: the split firmware packages are too load-bearing to let
-    // a transient detection glitch or swapped-hardware-pre-reboot state remove
-    // them. Their cost (few MB) is trivial relative to the "GPU fails to bring up
-    // after boot" cost of removing them by mistake.
+    // Phase 30 audit M1 + Phase 31 audit: the split firmware packages are too
+    // load-bearing to let a transient detection glitch or swapped-hardware-pre-
+    // reboot state remove them. Their cost (few MB) is trivial relative to the
+    // "GPU fails to bring up after boot" cost of removing them by mistake.
+    // `linux-firmware-nvidia` added Phase 31 for symmetry — same risk class.
     "linux-firmware-amdgpu",
     "linux-firmware-intel",
+    "linux-firmware-nvidia",
     "base",
     "base-devel",
     "systemd",
@@ -138,6 +140,10 @@ fn candidate_universe() -> Vec<&'static str> {
     v
 }
 
+// Phase 31 audit: `cuda-tools` removed — it doesn't exist as a separate package
+// in Arch (toolkit binaries ship inside `cuda` itself). `nvidia` and `nvidia-dkms`
+// are kept because legacy hosts upgraded across the 595+ consolidation may still
+// have them lingering even though current `[extra]` only ships `nvidia-open(-dkms)`.
 const NVIDIA_VENDOR_PACKAGES: &[&str] = &[
     "nvidia",
     "nvidia-dkms",
@@ -160,7 +166,6 @@ const NVIDIA_VENDOR_PACKAGES: &[&str] = &[
     "opencl-nvidia",
     "lib32-opencl-nvidia",
     "cuda",
-    "cuda-tools",
 ];
 
 // Phase 30 audit M1: `linux-firmware-amdgpu` / `linux-firmware-intel` are
@@ -215,16 +220,30 @@ const DEFUNCT_PACKAGES: &[&str] = &[
 /// AMDVLK pair — only flagged for removal when `vulkan-radeon` (RADV) is also installed.
 const AMDVLK_PACKAGES: &[&str] = &["amdvlk", "lib32-amdvlk"];
 
+/// True when at least one GPU from a vendor archgpu knows about (NVIDIA / AMD /
+/// Intel) is present in the inventory. Used as the trip-wire for cleanup —
+/// without a recognised vendor, every vendor list would be flagged HardwareAbsent
+/// and the user would be invited to wipe their entire driver stack.
+///
+/// Phase 31 audit: the Phase 30 guard checked only `gpus.is_empty()`, which
+/// passed through hosts that have a single GPU detected as `GpuVendor::Other`
+/// (ASPEED BMC, SiS, Matrox, future unknown PCI IDs). A headless server with
+/// only an ASPEED display + nvidia-utils installed for CUDA would have its
+/// CUDA stack wiped by the previous logic.
+fn has_recognised_vendor(gpus: &GpuInventory) -> bool {
+    gpus.has_nvidia() || gpus.has_amd() || gpus.has_intel()
+}
+
 /// Cleanup state probe. Used by the Phase 30 GUI card to decide whether the
 /// Cleanup card shows "0 candidates / system already converged" or "N packages
 /// can be removed — Preview".
 pub fn check_state(ctx: &Context, gpus: &GpuInventory) -> TweakState {
     let _ = ctx;
-    // Phase 30 audit C1: refuse to classify when the GPU inventory is empty —
-    // `lspci` failed or `pciutils` is missing. Otherwise every vendor package
-    // gets flagged HardwareAbsent and the GUI would invite the user to wipe
-    // their entire driver stack.
-    if gpus.gpus.is_empty() {
+    // Phase 30 audit C1 + Phase 31 audit: refuse to classify when no recognised
+    // vendor is present — empty inventory OR an inventory containing only
+    // `GpuVendor::Other` GPUs. Otherwise every vendor package gets flagged
+    // HardwareAbsent and the GUI invites a destructive wipe.
+    if !has_recognised_vendor(gpus) {
         return TweakState::Incompatible;
     }
     let Some(installed) = pacman_query_installed_set() else {
@@ -245,15 +264,17 @@ pub fn apply(
     assume_yes: bool,
     progress: &mut dyn FnMut(&str),
 ) -> Result<Vec<ChangeReport>> {
-    // Phase 30 audit C1: hardware-absent classification is only meaningful when
-    // we actually detected some hardware. If lspci returned nothing (detection
-    // failed, pciutils missing, running in a container without /sys), refuse
-    // to run — otherwise every vendor package on disk would be flagged for
-    // removal.
-    if gpus.gpus.is_empty() {
+    // Phase 30 audit C1 + Phase 31 audit: refuse when no recognised vendor is
+    // present (empty inventory OR Other-vendor-only host like an ASPEED BMC
+    // server). Otherwise the hardware-absent classification would queue every
+    // NVIDIA/AMD/Intel package on disk for `pacman -Rns`.
+    if !has_recognised_vendor(gpus) {
         return Ok(vec![ChangeReport::AlreadyApplied {
-            detail: "GPU inventory empty — refusing to classify hardware-absent packages. \
-                     Install `pciutils` and verify `lspci` works, then retry."
+            detail: "no recognised GPU vendor (NVIDIA/AMD/Intel) detected — refusing to \
+                     classify hardware-absent packages. If lspci is broken, install `pciutils` \
+                     and retry. If your only GPU is from a vendor archgpu doesn't recognise \
+                     (ASPEED BMC, SiS, Matrox, etc.), run `pacman -Rns` manually for any \
+                     unwanted vendor packages."
                 .into(),
         }]);
     }
@@ -382,7 +403,11 @@ pub fn compute_removal_plan(
     for p in DEFUNCT_PACKAGES {
         push(
             p,
-            "package no longer exists on Arch — Mesa 26 bundles VA-API/VDPAU in-tree".into(),
+            // Phase 31 audit: VDPAU was DROPPED from Gallium in Mesa 25 (not
+            // bundled). VA-API IS now in-tree.
+            "package no longer exists on Arch — Mesa 26 bundles VA-API in-tree and Gallium \
+             dropped VDPAU"
+                .into(),
             RemovalCategory::DefunctPackage,
         );
     }
@@ -660,12 +685,67 @@ mod tests {
         match &reports[0] {
             ChangeReport::AlreadyApplied { detail } => {
                 assert!(
-                    detail.contains("GPU inventory empty"),
+                    detail.contains("no recognised GPU vendor"),
                     "expected refusal message, got: {detail}"
                 );
             }
             other => panic!("expected AlreadyApplied refusal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn apply_refuses_to_run_on_other_vendor_only_host() {
+        // Phase 31 audit: a headless server with only an ASPEED BMC display
+        // (GpuVendor::Other) must NOT be classified as "every vendor absent →
+        // remove all vendor packages". Otherwise a host that happens to have
+        // nvidia-utils installed for headless CUDA would have it wiped.
+        let aspeed = GpuInfo {
+            vendor: GpuVendor::Other,
+            vendor_id: 0x1a03, // ASPEED
+            device_id: 0x2000,
+            pci_address: "0000:00:03.0".into(),
+            vendor_name: "ASPEED".into(),
+            product_name: "AST2500 BMC".into(),
+            kernel_driver: None,
+            is_integrated: true,
+            nvidia_gen: None,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = Context::rooted_for_test(tmp.path(), ExecutionMode::Apply);
+        let reports = apply(&ctx, &inv(vec![aspeed.clone()]), true, &mut |_| {}).unwrap();
+        assert_eq!(reports.len(), 1);
+        match &reports[0] {
+            ChangeReport::AlreadyApplied { detail } => {
+                assert!(
+                    detail.contains("no recognised GPU vendor"),
+                    "got: {detail}"
+                );
+            }
+            other => panic!("expected refusal, got {other:?}"),
+        }
+        // check_state matches apply's behavior — Incompatible.
+        assert_eq!(check_state(&ctx, &inv(vec![aspeed])), TweakState::Incompatible);
+    }
+
+    #[test]
+    fn split_firmware_nvidia_protected_by_never_remove() {
+        // Phase 31 audit: linux-firmware-nvidia joins linux-firmware-amdgpu and
+        // linux-firmware-intel in NEVER_REMOVE. Same load-bearing-at-boot
+        // rationale — we don't queue it for removal even on hosts where the
+        // vendor is transiently or temporarily absent.
+        let never: HashSet<&'static str> = NEVER_REMOVE.iter().copied().collect();
+        assert!(never.contains("linux-firmware-nvidia"));
+    }
+
+    #[test]
+    fn cuda_tools_removed_from_candidate_universe() {
+        // Phase 31 audit: `cuda-tools` does not exist as a standalone Arch
+        // package (CUDA toolkit binaries ship inside `cuda` itself). Keeping
+        // it in the candidate list was harmless noise.
+        let universe: HashSet<&'static str> = candidate_universe().into_iter().collect();
+        assert!(!universe.contains("cuda-tools"));
+        // `cuda` itself remains, correctly classified.
+        assert!(universe.contains("cuda"));
     }
 
     #[test]

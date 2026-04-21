@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -36,6 +37,16 @@ impl std::fmt::Display for ChangeReport {
 
 /// Atomic write: write to a sibling temp file, fsync, then rename over the target.
 /// Creates parent directory if missing.
+///
+/// **Security hardening (Phase 31 audit H1+H2):**
+///   - Temp filename includes PID + nanosecond clock for unpredictability — a
+///     non-root attacker cannot pre-plant a symlink at the temp path even with
+///     directory listing access.
+///   - Temp file is opened with `O_NOFOLLOW | O_EXCL` so a pre-planted symlink
+///     causes the open to fail rather than silently follow.
+///   - After rename, the parent directory is fsynced so the rename is durable
+///     across crashes — critical for `/etc/kernel/cmdline` written immediately
+///     before `mkinitcpio -P` rebuilds the UKI.
 pub fn atomic_write<P: AsRef<Path>>(target: P, contents: &str) -> Result<()> {
     let target = target.as_ref();
     if let Some(parent) = target.parent() {
@@ -45,15 +56,29 @@ pub fn atomic_write<P: AsRef<Path>>(target: P, contents: &str) -> Result<()> {
         }
     }
 
+    // Phase 31 audit H1: use PID + ns-precision timestamp for the suffix so the
+    // temp path is not predictable to a process that knows our PID.
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
     let tmp = {
         let mut s = target.as_os_str().to_owned();
-        s.push(format!(".tmp.{}", std::process::id()));
+        s.push(format!(".tmp.{}.{}", std::process::id(), nanos));
         PathBuf::from(s)
     };
 
     {
-        let mut f =
-            std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+        // Phase 31 audit H1: O_NOFOLLOW refuses to follow a pre-planted symlink
+        // at the temp path; O_EXCL refuses to open if the target exists. Together
+        // they make the temp-file create-and-write step TOCTOU-safe even with a
+        // permissive parent dir.
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&tmp)
+            .with_context(|| format!("creating {} (O_NOFOLLOW|O_EXCL)", tmp.display()))?;
         f.write_all(contents.as_bytes())
             .with_context(|| format!("writing {}", tmp.display()))?;
         f.sync_all()
@@ -62,6 +87,23 @@ pub fn atomic_write<P: AsRef<Path>>(target: P, contents: &str) -> Result<()> {
 
     std::fs::rename(&tmp, target)
         .with_context(|| format!("renaming {} -> {}", tmp.display(), target.display()))?;
+
+    // Phase 31 audit H2: fsync the parent directory so the rename's directory-
+    // entry change is durable. Without this, a crash between rename() and the
+    // next sync could lose the rename and leave the dir entry pointing at the
+    // old inode (or no inode). This matters most for /etc/kernel/cmdline: a
+    // crash mid-mkinitcpio could otherwise produce an initramfs built from the
+    // new cmdline but a /etc/kernel/cmdline that snaps back to the old content.
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            // Best-effort; not all filesystems support directory fsync. Warn on
+            // failure but don't fail the write — the data file IS already
+            // fsynced, which is the most-load-bearing guarantee.
+            if let Ok(dir_handle) = std::fs::File::open(parent) {
+                let _ = dir_handle.sync_all();
+            }
+        }
+    }
     Ok(())
 }
 

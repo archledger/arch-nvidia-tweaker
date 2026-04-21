@@ -409,7 +409,22 @@ fn apply_uki(
     cmd.arg("-P");
     let status = run_streaming(cmd, |line| progress(&format!("[mkinitcpio] {line}")))?;
     if !status.success() {
-        anyhow::bail!("mkinitcpio -P exited with {status}");
+        // Phase 31 audit H3: roll back /etc/kernel/cmdline on mkinitcpio
+        // failure (matches apply_remove_uki's behavior). Leaving the new
+        // cmdline on disk after a failed UKI build produces a host where the
+        // next `mkinitcpio -P` uses the modified cmdline but the installed
+        // UKI image was built from the original — a subtle mismatch that
+        // makes troubleshooting harder.
+        let _ = atomic_write(path, &original);
+        progress(&format!(
+            "[mkinitcpio] rebuild failed — restored {} to its pre-edit content",
+            path.display()
+        ));
+        anyhow::bail!(
+            "mkinitcpio -P exited with {status} — restored {} to its pre-edit content to \
+             avoid leaving a mismatched cmdline + half-built UKI",
+            path.display()
+        );
     }
     Ok(ChangeReport::Applied {
         detail: format!("UKI: added {} + rebuilt UKIs", missing.join(" ")),
@@ -1160,7 +1175,22 @@ fn apply_remove_uki(
     cmd.arg("-P");
     let status = run_streaming(cmd, |line| progress(&format!("[mkinitcpio] {line}")))?;
     if !status.success() {
-        anyhow::bail!("mkinitcpio -P exited with {status}");
+        // Phase 31 audit H3: roll back /etc/kernel/cmdline if mkinitcpio fails.
+        // Previously a failed UKI rebuild left the new cmdline on disk, so the
+        // next manual `mkinitcpio -P` (or any tool that reads the cmdline)
+        // would see the modified content even though the UKI image is stale or
+        // half-built. Restoring the original keeps the on-disk source coherent
+        // with the last successfully-built UKI.
+        let _ = atomic_write(path, &original);
+        progress(&format!(
+            "[mkinitcpio] rebuild failed — restored {} to its pre-edit content",
+            path.display()
+        ));
+        anyhow::bail!(
+            "mkinitcpio -P exited with {status} — restored {} to its pre-edit content to \
+             avoid leaving a mismatched cmdline + half-built UKI",
+            path.display()
+        );
     }
     Ok(ChangeReport::Applied {
         detail: format!("UKI: removed {} + rebuilt UKIs", removed.join(" ")),

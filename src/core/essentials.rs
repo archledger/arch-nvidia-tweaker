@@ -3,9 +3,12 @@
 //!   - Vulkan loader (cross-vendor) + vendor ICDs
 //!   - Mesa GL (cross-vendor) — required by everything that draws 3D
 //!   - Split firmware packages `linux-firmware-amdgpu` / `linux-firmware-intel`
-//!     (both were carved out of the monolithic `linux-firmware` in 2025 — a plain
-//!     `linux-firmware` install is no longer sufficient and amdgpu/i915 fail to
-//!     load late without them)
+//!     (carved out as separately-installable splits in the 2025 reorg).
+//!     `linux-firmware` still exists but is now a meta-package that depends on
+//!     the splits — so `pacman -S linux-firmware` installs everything via deps.
+//!     Installing the specific splits directly is stricter (guarantees the
+//!     exact GPU-vendor firmware is present even if `linux-firmware` is
+//!     manually uninstalled) and documents the dependency relationship.
 //!   - Video acceleration: `intel-media-driver` (Gen 8+) or `libva-intel-driver`
 //!     (Gen 6/7 — Sandy Bridge / Ivy Bridge / Haswell)
 //!   - Diagnostic userspace: `vulkan-tools` (vulkaninfo/vkcube), `clinfo` (OpenCL
