@@ -5,12 +5,16 @@ use std::thread;
 
 use crate::core::auto;
 use crate::core::bootloader::{self, BootloaderType};
+use crate::core::cleanup;
 use crate::core::diagnostics::{self, Severity};
+use crate::core::essentials;
 use crate::core::gaming;
 use crate::core::gpu::{GpuInventory, PackageSource};
+use crate::core::groups;
 use crate::core::hardware::{self, FormFactor};
 use crate::core::power;
 use crate::core::repair;
+use crate::core::state::TweakState;
 use crate::core::wayland;
 use crate::core::{self, Actions, Context, ExecutionMode, SystemPaths};
 
@@ -51,6 +55,11 @@ pub fn run() -> Result<()> {
             ui.set_opt_power(rec.power);
             ui.set_opt_gaming(rec.gaming);
             ui.set_opt_repair(rec.repair);
+            // Phase 30: Auto-Optimize also flips on Essentials and Groups when
+            // their check_state says Unapplied. Cleanup and troubleshoot stay
+            // OFF — opt-in invariant from Phases 28/29.
+            ui.set_opt_essentials(rec.essentials);
+            ui.set_opt_groups(rec.groups);
 
             let names = auto::recommended_names(rec);
             if names.is_empty() {
@@ -217,11 +226,10 @@ pub fn run() -> Result<()> {
                 power: ui.get_opt_power(),
                 gaming: ui.get_opt_gaming(),
                 repair: ui.get_opt_repair(),
-                // Phase 30: replaced with proper Slint bindings later in this PR
-                essentials: false,
-                groups: false,
-                cleanup: false,
-                troubleshoot: false,
+                essentials: ui.get_opt_essentials(),
+                groups: ui.get_opt_groups(),
+                cleanup: ui.get_opt_cleanup(),
+                troubleshoot: ui.get_opt_troubleshoot(),
             };
             if !actions.any() {
                 append_log(&ui, "No actions selected — nothing to do.");
@@ -377,6 +385,22 @@ fn apply_tweak_states(ui: &MainWindow, ctx: &Context, gpus: &GpuInventory, form:
     let g = gaming::check_state(ctx, gpus, form);
     ui.set_state_gaming_applied(g.is_active());
     ui.set_state_gaming_pending_reboot(g.is_pending_reboot());
+
+    // Phase 30: per-tweak state for the cross-vendor Overview-tab cards.
+    let e = essentials::check_state(ctx, gpus);
+    ui.set_state_essentials_applied(e.is_active());
+
+    let gr = groups::check_state(ctx);
+    ui.set_state_groups_applied(gr.is_active());
+    // Incompatible means "running without a detectable non-root invoking user"
+    // — usermod has no target. Surfaced as the Unsupported badge.
+    ui.set_state_groups_incompatible(matches!(gr, TweakState::Incompatible));
+
+    let c = cleanup::check_state(ctx, gpus);
+    ui.set_state_cleanup_applied(c.is_active());
+
+    // troubleshoot has no Active state by design — recipes can always run; each
+    // recipe reports its own per-run verification into the console.
 
     // Phase 20 + UI overhaul: repair tweak — Active iff scanner finds nothing to heal.
     // The UI renders a green health pill in the hero when clean, a red-amber Attention
