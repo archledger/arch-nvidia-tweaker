@@ -70,8 +70,15 @@ pub struct Cli {
     #[arg(long)]
     pub apply_cleanup: bool,
 
-    /// Run every apply action (NOTE: does NOT include --apply-cleanup; cleanup
-    /// is destructive and explicit-opt-in only)
+    /// Phase 29: smart troubleshoot loop. Runs each registered Recipe through
+    /// detect → fix → verify. Pair with --dry-run to detect+explain without
+    /// writing fixes. Recipes: nomodeset_stuck, nouveau_active_with_nvidia,
+    /// dangling_vulkan_icd, software_rendering (diagnostic-only).
+    #[arg(long)]
+    pub apply_troubleshoot: bool,
+
+    /// Run every apply action (NOTE: does NOT include --apply-cleanup or
+    /// --apply-troubleshoot; both are explicit-opt-in only)
     #[arg(long)]
     pub apply_all: bool,
 
@@ -98,6 +105,7 @@ impl Cli {
             || self.apply_essentials
             || self.apply_groups
             || self.apply_cleanup
+            || self.apply_troubleshoot
             || self.apply_all
     }
 
@@ -119,10 +127,11 @@ impl Cli {
 
     fn actions(&self) -> Actions {
         if self.apply_all {
-            // --apply-all + --apply-cleanup is a valid combo — the user explicitly
-            // opted both in. all() leaves cleanup off; merge it in here.
+            // --apply-all may be combined with --apply-cleanup and/or
+            // --apply-troubleshoot. all() leaves both off; merge in explicit opt-ins.
             let mut a = Actions::all();
             a.cleanup = self.apply_cleanup;
+            a.troubleshoot = self.apply_troubleshoot;
             return a;
         }
         Actions {
@@ -134,6 +143,7 @@ impl Cli {
             essentials: self.apply_essentials,
             groups: self.apply_groups,
             cleanup: self.apply_cleanup,
+            troubleshoot: self.apply_troubleshoot,
         }
     }
 }

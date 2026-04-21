@@ -82,25 +82,25 @@ archgpu --diagnose                # 14-point issue scan with remediation hints
 archgpu --dry-run --apply-all
 
 # Apply individual areas
-<<<<<<< HEAD
+sudo archgpu --apply-groups            # add invoking user to video + render (re-login to activate)
 sudo archgpu --apply-essentials --yes  # Mesa + Vulkan loader + split firmware + VA-API + diag userspace
 sudo archgpu --apply-wayland           # env drop-in + initramfs modules + PRIME (hybrid)
 sudo archgpu --apply-bootloader        # GPU-aware cmdline + per-bootloader regeneration
 sudo archgpu --apply-power             # suspend services + modprobe + nouveau blacklist
 sudo archgpu --apply-gaming --yes      # multilib + Vulkan + gamemode + mangohud (+ AUR if needed)
-=======
-sudo archgpu --apply-groups       # add invoking user to video + render (re-login to activate)
-sudo archgpu --apply-wayland      # env drop-in + initramfs modules + PRIME (hybrid)
-sudo archgpu --apply-bootloader   # GPU-aware cmdline + per-bootloader regeneration
-sudo archgpu --apply-power        # suspend services + modprobe + nouveau blacklist
-sudo archgpu --apply-gaming --yes # multilib + Vulkan + gamemode + mangohud (+ AUR if needed)
->>>>>>> origin/phase-27-groups
 
 # Reverse cleanup (Phase 28) — destructive, opt-in only, NOT in --apply-all
 sudo archgpu --dry-run --apply-cleanup    # PREVIEW: list what would be removed and why
 sudo archgpu --apply-cleanup --yes        # actually remove (writes pre-cleanup snapshot first)
 
-# All at once (does NOT include --apply-cleanup; pass it explicitly to combine)
+# Smart troubleshoot (Phase 29) — detect → fix → verify per recipe
+sudo archgpu --dry-run --apply-troubleshoot   # detect-only; explain causes, no writes
+sudo archgpu --apply-troubleshoot             # apply auto-fixable recipes + verify
+# Recipes (initial set): nomodeset_stuck, nouveau_active_with_nvidia,
+#                        dangling_vulkan_icd, software_rendering (diagnostic-only)
+
+# All at once (does NOT include --apply-cleanup or --apply-troubleshoot;
+# pass them explicitly to combine)
 sudo archgpu --apply-all --yes
 ```
 
@@ -132,17 +132,14 @@ The live-kernel probe reads `/sys/module/nvidia_drm/parameters/{modeset,fbdev}`,
 | `src/core/hardware.rs` | SMBIOS `chassis_type` → `FormFactor::{Laptop, Desktop, Unknown}` |
 | `src/core/wayland.rs` | Modern comment-only profile.d drop-in, `MODULES+=()` mkinitcpio drop-in (HOOKS untouched), hybrid PRIME Xorg config, sanitation scanner for `/etc/X11/xorg.conf` + `WLR_NO_HARDWARE_CURSORS` + global `GBM_BACKEND=nvidia-drm` |
 | `src/core/power.rs` | modprobe drop-in (universal + laptop-specific options), nouveau blacklist, `systemctl enable` of nvidia-suspend/hibernate/resume |
-<<<<<<< HEAD
 | `src/core/essentials.rs` (Phase 26) | Vendor-agnostic userspace baseline: `ALWAYS_ON_PACKAGES` (Vulkan loader + diag tools) + vendor-conditional Mesa / RADV / ANV / split firmware / VA-API driver. Intel VA-API routing is device-ID-gated (< 0x1600 → `libva-intel-driver`, else `intel-media-driver`). |
 | `src/core/gaming.rs` | `[multilib]` state-machine uncommenter, GPU-aware package resolver (`resolve_gaming_packages` + `resolve_aur_packages`), sanitation scanner for AMDVLK / `xf86-video-intel` / `mesa-vdpau` / `libva-mesa-driver`, `vm.max_map_count` sysctl |
-=======
-| `src/core/gaming.rs` | `[multilib]` state-machine uncommenter, GPU-aware package resolver (`resolve_gaming_packages` + `resolve_aur_packages`), sanitation scanner for AMDVLK / `xf86-video-intel` / `mesa-vdpau`, `vm.max_map_count` sysctl |
 | `src/core/groups.rs` (Phase 27) | Provision invoking user's membership in `video` + `render` via `usermod -aG`. Re-login (NOT reboot) required for the change to reach the current session — surfaced in the Apply-time detail message. Pure parser for `/etc/group` + getent-style runtime probe. |
->>>>>>> origin/phase-27-groups
 | `src/core/aur.rs` | Helper detection (yay / paru), `invoking_user` via `SUDO_USER` / `PKEXEC_UID` + allowlist, manual `yay-bin` bootstrap (git clone + `makepkg` as user → `pacman -U` as root), `SUDO_ASKPASS` routing per DE |
 | `src/core/prime.rs` | Xorg `OutputClass` drop-in for hybrid GPUs (skipped when nvidia-utils ships its own) |
 | `src/core/diagnostics.rs` | 14-point read-only scanner, `Finding{severity,title,detail,fix_hint}`, surfaces gaming + wayland sanitation warnings |
 | `src/core/cleanup.rs` (Phase 28) | Reverse-cleanup engine: `compute_removal_plan(gpus, installed)` classifies each candidate as HardwareAbsent / Defunct / LegacyDeprecated / ConflictingChoice. `apply()` writes a pre-cleanup `pacman -Qq` snapshot to `/var/backups/archgpu/pre-cleanup-<ts>.txt` before any `pacman -Rns`. NEVER_REMOVE allowlist as defense-in-depth. Opt-in only — never in `Actions::all()` or `auto::recommend`. |
+| `src/core/troubleshoot.rs` (Phase 29) | `Recipe` trait + initial recipes (`nomodeset_stuck`, `nouveau_active_with_nvidia`, `dangling_vulkan_icd`, `software_rendering`). Each runs detect → cause → fix → verify. `Verification::{LiveVerified, PendingReboot, Failed, NotApplicable}` distinguishes "fix took effect now" from "config written, reboot to confirm" from "fix attempted but didn't help." Opt-in only — never in `Actions::all()` or `auto::recommend`. |
 | `src/core/auto.rs` | `recommend(ctx, form, gpus) -> Actions` — cross-references hardware applicability AND `check_state().is_unapplied()`; used both at GUI startup and by the Auto-Optimize hero |
 | `src/core/state.rs` | `TweakState::{Active, PendingReboot, Unapplied, Incompatible}` + helpers |
 | `src/utils/process.rs` | `run_streaming(cmd, on_line)` — pipes stdout+stderr through mpsc into an `FnMut(&str)` |

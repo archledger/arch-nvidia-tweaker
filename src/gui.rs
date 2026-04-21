@@ -221,6 +221,7 @@ pub fn run() -> Result<()> {
                 essentials: false,
                 groups: false,
                 cleanup: false,
+                troubleshoot: false,
             };
             if !actions.any() {
                 append_log(&ui, "No actions selected — nothing to do.");

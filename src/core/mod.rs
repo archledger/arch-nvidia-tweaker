@@ -15,6 +15,7 @@ pub mod prime;
 pub mod rendering;
 pub mod repair;
 pub mod state;
+pub mod troubleshoot;
 pub mod wayland;
 
 #[cfg(test)]
@@ -193,13 +194,17 @@ pub struct Actions {
     /// conflicts. **Opt-in only**: not in `Actions::all()` and not surfaced by
     /// `auto::recommend`. Always writes a pre-cleanup snapshot before removing.
     pub cleanup: bool,
+    /// Phase 29: smart troubleshoot loop. Runs each registered Recipe through its
+    /// detect → fix → verify cycle. Opt-in only (not in `Actions::all()`, not in
+    /// `auto::recommend`) — the recipes spawn external probes (glxinfo,
+    /// vulkaninfo, mkinitcpio) that are too expensive for an unprompted run.
+    pub troubleshoot: bool,
 }
 
 impl Actions {
-    /// Phase 28 invariant: `cleanup` is **NOT** in `all()`. Mass `--apply-all` runs
-    /// must be safe to invoke on any host without ever removing packages the user
-    /// might want kept (e.g. they're setting up cross-compilation, or planning to
-    /// add a card from another vendor next week). Cleanup is explicit-opt-in only.
+    /// Phase 28+29 invariant: `cleanup` and `troubleshoot` are NOT in `all()`.
+    /// `--apply-all` must remain a safe-to-invoke fast path — cleanup is destructive
+    /// and troubleshoot fans out to subprocess probes that take noticeable time.
     pub fn all() -> Self {
         Self {
             wayland: true,
@@ -210,6 +215,7 @@ impl Actions {
             essentials: true,
             groups: true,
             cleanup: false,
+            troubleshoot: false,
         }
     }
 
@@ -222,6 +228,7 @@ impl Actions {
             || self.essentials
             || self.groups
             || self.cleanup
+            || self.troubleshoot
     }
 }
 
@@ -301,12 +308,20 @@ pub fn run_actions(
             out.push(("gaming", r));
         }
     }
-    // Phase 28: cleanup runs LAST so essentials/gaming have a chance to install
-    // the packages they want first; cleanup then removes the leftovers that
-    // don't belong on this host.
+    // Phase 28: cleanup runs after vendor stages so essentials/gaming have
+    // installed the packages they want first; cleanup then removes the
+    // leftovers that don't belong on this host.
     if actions.cleanup {
         for r in cleanup::apply(ctx, gpus, assume_yes, progress)? {
             out.push(("cleanup", r));
+        }
+    }
+    // Phase 29: troubleshoot runs LAST so every prior converge stage (including
+    // cleanup) has had a chance to fix what it can before recipes probe live
+    // state. Recipes that DON'T match (the healthy-box common case) are no-ops.
+    if actions.troubleshoot {
+        for r in troubleshoot::apply(ctx, gpus, assume_yes, progress)? {
+            out.push(("troubleshoot", r));
         }
     }
     Ok(out)
