@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use crate::core::aur;
+use crate::core::essentials::IntelGenerationCheck;
 use crate::core::gpu::{GpuInventory, NvidiaGeneration, PackageSource};
 use crate::core::hardware::FormFactor;
 use crate::core::state::TweakState;
@@ -381,10 +382,11 @@ pub fn resolve_gaming_packages(gpus: &GpuInventory, form: FormFactor) -> Vec<Str
         // user has amdvlk/lib32-amdvlk installed alongside.
         add("vulkan-radeon");
         add("lib32-vulkan-radeon");
-        // Phase 15: VA-API via Mesa for AMD. Replaces the VDPAU path that Mesa
-        // 25 removed — mesa-vdpau is sanitized-against below.
-        add("libva-mesa-driver");
-        add("lib32-libva-mesa-driver");
+        // Phase 26: `libva-mesa-driver` + `lib32-libva-mesa-driver` were removed —
+        // those packages no longer exist on Arch. Mesa bundles its own VA-API
+        // backend as of the 2025 Gallium consolidation, so `mesa` / `lib32-mesa`
+        // above are sufficient. Earlier versions of this tool tried to install
+        // the now-defunct names and hard-failed on any fresh system.
     }
     if gpus.has_intel() {
         // Phase 23: same 32-bit-OpenGL-runtime rationale as AMD above. Intel
@@ -393,10 +395,16 @@ pub fn resolve_gaming_packages(gpus: &GpuInventory, form: FormFactor) -> Vec<Str
         add("lib32-mesa");
         add("vulkan-intel");
         add("lib32-vulkan-intel");
-        // Phase 15: intel-media-driver (iHD) is the modern Gen8+ VA-API driver.
-        // Gen4-7 hosts need libva-intel-driver (legacy i965) — anyone running this
-        // tool on a Haswell-or-older Intel iGPU in 2026 can install that manually.
-        add("intel-media-driver");
+        // Phase 26: generation-gate the VA-API driver instead of unconditionally
+        // installing `intel-media-driver` (iHD). iHD covers Broadwell (Gen 8) and
+        // newer; Gen 6/7 (Sandy Bridge / Ivy Bridge / Haswell) need the legacy
+        // `libva-intel-driver` (i965). Boundary heuristic lives in
+        // `core::essentials`.
+        if gpus.any_pre_broadwell_intel() {
+            add("libva-intel-driver");
+        } else {
+            add("intel-media-driver");
+        }
     }
 
     pkgs
@@ -480,22 +488,27 @@ pub fn sanitation_warnings_from_installed(
     }
 
     // Mesa 25 legacy — VDPAU for the Gallium drivers (AMD / Intel / Nouveau) was
-    // removed in Mesa 25. The `mesa-vdpau` package still exists on Arch for
-    // transition but no longer ships usable drivers; applications should use
-    // VA-API (libva-mesa-driver, intel-media-driver, libva-nvidia-driver) instead.
-    let vdpau_found: Vec<&str> = ["mesa-vdpau", "lib32-mesa-vdpau"]
-        .into_iter()
-        .filter(|n| installed.contains(*n))
-        .collect();
-    if !vdpau_found.is_empty() {
+    // removed in Mesa 25. The `mesa-vdpau` / `libva-mesa-driver` packages no longer
+    // exist on Arch at all (Mesa 26 bundles VA-API in-tree and VDPAU is gone);
+    // `vdpauinfo` stays useful for NVIDIA's VDPAU backend only.
+    let defunct_found: Vec<&str> = [
+        "mesa-vdpau",
+        "lib32-mesa-vdpau",
+        "libva-mesa-driver",
+        "lib32-libva-mesa-driver",
+    ]
+    .into_iter()
+    .filter(|n| installed.contains(*n))
+    .collect();
+    if !defunct_found.is_empty() {
         out.push(SanitationWarning {
-            title: "Legacy Mesa VDPAU packages installed".into(),
+            title: "Legacy Mesa VA-API / VDPAU packages installed".into(),
             detail: format!(
-                "Found: {}. Mesa 25 removed in-tree VDPAU support for Gallium drivers. VA-API \
-                 (libva-mesa-driver / intel-media-driver / libva-nvidia-driver) is the modern path.",
-                vdpau_found.join(", ")
+                "Found: {}. Mesa 26 bundles VA-API (and dropped VDPAU) in-tree — these split \
+                 packages no longer exist on Arch and linger only from pre-2026 upgrades.",
+                defunct_found.join(", ")
             ),
-            remediation: format!("sudo pacman -Rns {}", vdpau_found.join(" ")),
+            remediation: format!("sudo pacman -Rns {}", defunct_found.join(" ")),
         });
     }
 
@@ -512,6 +525,8 @@ pub fn sanitation_warnings(gpus: &GpuInventory) -> Vec<SanitationWarning> {
         "xf86-video-amdgpu",
         "mesa-vdpau",
         "lib32-mesa-vdpau",
+        "libva-mesa-driver",
+        "lib32-libva-mesa-driver",
     ];
     let owned: Vec<String> = candidates.iter().map(|s| s.to_string()).collect();
     let installed = pacman_query_installed_set(&owned).unwrap_or_default();
@@ -787,12 +802,15 @@ mod tests {
     }
 
     #[test]
-    fn amd_gets_libva_mesa_driver() {
+    fn amd_gets_mesa_and_radv_without_defunct_libva_mesa_driver() {
         let pkgs = resolve_gaming_packages(&inv(vec![amd(0x73bf)]), FormFactor::Desktop);
-        // Phase 15: AMD VA-API via Mesa.
-        assert!(pkgs.contains(&"libva-mesa-driver".to_string()));
-        assert!(pkgs.contains(&"lib32-libva-mesa-driver".to_string()));
+        // Phase 26: `libva-mesa-driver` + `lib32-libva-mesa-driver` no longer exist
+        // on Arch (Mesa bundles its own VA-API backend). They must NOT appear in the
+        // install list — doing so would hard-fail `pacman -S` on every fresh install.
+        assert!(!pkgs.contains(&"libva-mesa-driver".to_string()));
+        assert!(!pkgs.contains(&"lib32-libva-mesa-driver".to_string()));
         assert!(pkgs.contains(&"vulkan-radeon".to_string()));
+        assert!(pkgs.contains(&"lib32-vulkan-radeon".to_string()));
         assert!(
             !pkgs.iter().any(|p| p == "amdvlk"),
             "never recommend AMDVLK"
@@ -802,6 +820,16 @@ mod tests {
         // titles fall back to llvmpipe for 32-bit GL calls.
         assert!(pkgs.contains(&"mesa".to_string()));
         assert!(pkgs.contains(&"lib32-mesa".to_string()));
+    }
+
+    #[test]
+    fn intel_pre_broadwell_host_gets_legacy_i965_va_driver() {
+        // Phase 26: Gen 6/7 Intel (Sandy Bridge / Ivy Bridge / Haswell — device ID
+        // < 0x1600) gets `libva-intel-driver` instead of `intel-media-driver`.
+        // iHD doesn't support these older gens.
+        let pkgs = resolve_gaming_packages(&inv(vec![intel(0x0166)]), FormFactor::Laptop);
+        assert!(pkgs.contains(&"libva-intel-driver".to_string()));
+        assert!(!pkgs.contains(&"intel-media-driver".to_string()));
     }
 
     #[test]

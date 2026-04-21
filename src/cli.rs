@@ -49,7 +49,36 @@ pub struct Cli {
     #[arg(long)]
     pub apply_repair: bool,
 
-    /// Run every apply action
+    /// Phase 26: install vendor-agnostic userspace — Vulkan loader, Mesa GL,
+    /// split firmware (`linux-firmware-amdgpu` / `linux-firmware-intel`), VA-API
+    /// drivers (generation-gated on Intel), and diagnostic tools (vulkan-tools,
+    /// clinfo, libva-utils, vdpauinfo). Non-gaming; run before `--apply-gaming`.
+    #[arg(long)]
+    pub apply_essentials: bool,
+
+    /// Phase 27: provision the invoking user's membership in `video` and `render`
+    /// via `usermod -aG video,render <user>`. Requires re-login (not reboot) for
+    /// the change to reach the current session.
+    #[arg(long)]
+    pub apply_groups: bool,
+
+    /// Phase 28: reverse-cleanup pass — removes hardware-absent vendor packages,
+    /// defunct (Mesa-2026-bundled) packages, legacy Xorg DDX drivers, AMDVLK
+    /// when RADV is also installed. Writes a pre-cleanup snapshot to
+    /// /var/backups/archgpu/pre-cleanup-<ts>.txt before removing anything.
+    /// Pair with --dry-run to see the plan without removing.
+    #[arg(long)]
+    pub apply_cleanup: bool,
+
+    /// Phase 29: smart troubleshoot loop. Runs each registered Recipe through
+    /// detect → fix → verify. Pair with --dry-run to detect+explain without
+    /// writing fixes. Recipes: nomodeset_stuck, nouveau_active_with_nvidia,
+    /// dangling_vulkan_icd, software_rendering (diagnostic-only).
+    #[arg(long)]
+    pub apply_troubleshoot: bool,
+
+    /// Run every apply action (NOTE: does NOT include --apply-cleanup or
+    /// --apply-troubleshoot; both are explicit-opt-in only)
     #[arg(long)]
     pub apply_all: bool,
 
@@ -73,6 +102,10 @@ impl Cli {
             || self.apply_power
             || self.apply_gaming
             || self.apply_repair
+            || self.apply_essentials
+            || self.apply_groups
+            || self.apply_cleanup
+            || self.apply_troubleshoot
             || self.apply_all
     }
 
@@ -94,7 +127,12 @@ impl Cli {
 
     fn actions(&self) -> Actions {
         if self.apply_all {
-            return Actions::all();
+            // --apply-all may be combined with --apply-cleanup and/or
+            // --apply-troubleshoot. all() leaves both off; merge in explicit opt-ins.
+            let mut a = Actions::all();
+            a.cleanup = self.apply_cleanup;
+            a.troubleshoot = self.apply_troubleshoot;
+            return a;
         }
         Actions {
             wayland: self.apply_wayland,
@@ -102,6 +140,10 @@ impl Cli {
             power: self.apply_power,
             gaming: self.apply_gaming,
             repair: self.apply_repair,
+            essentials: self.apply_essentials,
+            groups: self.apply_groups,
+            cleanup: self.apply_cleanup,
+            troubleshoot: self.apply_troubleshoot,
         }
     }
 }

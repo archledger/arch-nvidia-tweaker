@@ -1,7 +1,8 @@
 use crate::core::gaming;
 use crate::core::gpu::GpuInventory;
+use crate::core::groups;
 use crate::core::hardware::FormFactor;
-use crate::core::{bootloader, power, repair, wayland, Actions, Context};
+use crate::core::{bootloader, essentials, power, repair, wayland, Actions, Context};
 
 /// Determine the best default action set for the detected hardware AND current system state.
 ///
@@ -32,6 +33,20 @@ pub fn recommend(ctx: &Context, form: FormFactor, gpus: &GpuInventory) -> Action
         // Phase 20: Auto-Optimize recommends repair whenever the scanner finds stale
         // artifacts. Universally applicable, so the only gate is state.
         repair: repair::check_state(ctx, gpus, form).is_unapplied(),
+        // Phase 26: essentials is universal — every host benefits from the Vulkan
+        // loader + Mesa + split firmware + diagnostic userspace. State-gated only.
+        essentials: essentials::check_state(ctx, gpus).is_unapplied(),
+        // Phase 27: groups is universal for any host with a non-root invoking user.
+        // Incompatible (no SUDO_USER / PKEXEC_UID) → not recommended.
+        groups: groups::check_state(ctx).is_unapplied(),
+        // Phase 28 invariant: cleanup is destructive — auto-recommend never
+        // enables it. User must opt in via `--apply-cleanup` or the GUI's
+        // explicit two-click Preview→Confirm flow.
+        cleanup: false,
+        // Phase 29 invariant: troubleshoot is opt-in only. Recipes are
+        // subprocess-heavy (glxinfo / vulkaninfo / mkinitcpio) and meant for
+        // explicit "fix my broken graphics" invocation.
+        troubleshoot: false,
     }
 }
 
@@ -41,6 +56,16 @@ pub fn recommended_names(actions: Actions) -> Vec<&'static str> {
     // Repair first — matches run_actions dispatch order and flags the urgent case visibly.
     if actions.repair {
         out.push("repair");
+    }
+    // Phase 27: groups runs immediately after repair (cheap user-state cleanup
+    // before pacman-heavy stages).
+    if actions.groups {
+        out.push("groups");
+    }
+    // Phase 26: essentials sits before vendor-specific stages so they see a
+    // healthy Vulkan/Mesa base.
+    if actions.essentials {
+        out.push("essentials");
     }
     if actions.wayland {
         out.push("wayland");
@@ -53,6 +78,17 @@ pub fn recommended_names(actions: Actions) -> Vec<&'static str> {
     }
     if actions.gaming {
         out.push("gaming");
+    }
+    // Phase 28: cleanup runs after vendor stages — note that auto::recommend
+    // never enables cleanup itself; it appears in this list only when a CLI flag
+    // or GUI checkbox set it explicitly.
+    if actions.cleanup {
+        out.push("cleanup");
+    }
+    // Phase 29: troubleshoot dispatches LAST, after every converge + cleanup
+    // stage. Same opt-in invariant as cleanup.
+    if actions.troubleshoot {
+        out.push("troubleshoot");
     }
     out
 }
@@ -214,6 +250,10 @@ mod tests {
             power: true,
             gaming: false,
             repair: false,
+            essentials: false,
+            groups: false,
+            cleanup: false,
+            troubleshoot: false,
         };
         assert_eq!(recommended_names(actions), vec!["wayland", "power"]);
     }
@@ -228,7 +268,53 @@ mod tests {
             power: false,
             gaming: true,
             repair: true,
+            essentials: false,
+            groups: false,
+            cleanup: false,
+            troubleshoot: false,
         };
         assert_eq!(recommended_names(actions), vec!["repair", "wayland", "gaming"]);
+    }
+
+    #[test]
+    fn recommended_names_full_stacked_ordering() {
+        // Phase 30: stacked ordering invariant — repair first, then groups (cheap
+        // user-state cleanup), then essentials (Mesa/Vulkan/firmware), then the
+        // vendor-specific stages, then cleanup, then troubleshoot.
+        let actions = Actions {
+            wayland: true,
+            bootloader: false,
+            power: false,
+            gaming: true,
+            repair: true,
+            essentials: true,
+            groups: true,
+            cleanup: true,
+            troubleshoot: true,
+        };
+        assert_eq!(
+            recommended_names(actions),
+            vec![
+                "repair",
+                "groups",
+                "essentials",
+                "wayland",
+                "gaming",
+                "cleanup",
+                "troubleshoot"
+            ]
+        );
+    }
+
+    #[test]
+    fn auto_recommend_never_includes_cleanup_or_troubleshoot() {
+        // Phases 28+29: both are destructive-ish opt-in only.
+        let tmp = tempdir().unwrap();
+        seed_pacman(tmp.path(), MULTILIB_OFF);
+        seed_cmdline_uki(tmp.path(), "rw quiet\n");
+        let ctx = Context::rooted_for_test(tmp.path(), ExecutionMode::DryRun);
+        let rec = recommend(&ctx, FormFactor::Laptop, &nvidia_hybrid());
+        assert!(!rec.cleanup, "auto-recommend must never enable cleanup");
+        assert!(!rec.troubleshoot, "auto-recommend must never enable troubleshoot");
     }
 }

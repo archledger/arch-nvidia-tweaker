@@ -257,6 +257,15 @@ export component MainWindow inherits Window {
     in-out property <bool> opt-power: false;
     in-out property <bool> opt-gaming: false;
     in-out property <bool> opt-repair: false;
+    // Phase 30: cross-vendor toggles wired to the Overview tab's system cards.
+    //   essentials   — Phase 26 vendor-agnostic baseline (Mesa + Vulkan + split firmware)
+    //   groups       — Phase 27 video+render group membership
+    //   cleanup      — Phase 28 reverse-cleanup (destructive; dry-run-by-default via opt-dry-run)
+    //   troubleshoot — Phase 29 recipe-based detect→fix→verify loop
+    in-out property <bool> opt-essentials: false;
+    in-out property <bool> opt-groups: false;
+    in-out property <bool> opt-cleanup: false;
+    in-out property <bool> opt-troubleshoot: false;
     in-out property <bool> opt-dry-run: true;
     in-out property <bool> opt-assume-yes: true;
 
@@ -278,6 +287,14 @@ export component MainWindow inherits Window {
     in-out property <bool> state-power-incompatible: false;
     in-out property <bool> state-gaming-applied: false;
     in-out property <bool> state-gaming-pending-reboot: false;
+    // Phase 30: per-tweak state for the cross-vendor cards.
+    in-out property <bool> state-essentials-applied: false;
+    in-out property <bool> state-groups-applied: false;
+    in-out property <bool> state-groups-incompatible: false;
+    in-out property <bool> state-cleanup-applied: false;
+    // troubleshoot has no "applied" concept — the card is always runnable; recipes
+    // report their own per-recipe verified/pending-reboot/failed outcomes in the
+    // console. No state property needed for this tweak.
 
     // Phase 20 + UI overhaul: self-heal scanner status, count, and per-action summaries.
     //   state-repair-applied       → green "✓ Active" badge (scanner found nothing to heal)
@@ -297,7 +314,11 @@ export component MainWindow inherits Window {
         + (root.opt-bootloader ? 1 : 0)
         + (root.opt-power ? 1 : 0)
         + (root.opt-gaming ? 1 : 0)
-        + (root.opt-repair ? 1 : 0);
+        + (root.opt-repair ? 1 : 0)
+        + (root.opt-essentials ? 1 : 0)
+        + (root.opt-groups ? 1 : 0)
+        + (root.opt-cleanup ? 1 : 0)
+        + (root.opt-troubleshoot ? 1 : 0);
 
     // ── Detection text (read from Rust) ────────────────────────────────────────────────────
     in-out property <string> chassis-text: "Detecting...";
@@ -584,6 +605,125 @@ export component MainWindow inherits Window {
                                 color: #F5DFB8;
                                 font-size: 12px;
                                 wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    // ── System essentials card (Phase 26+27) ───────────────────────────
+                    // Vendor-agnostic baseline. Lives in the Overview tab so it's visible
+                    // regardless of which vendor the user ends up drilling into.
+                    Card {
+                        Text {
+                            text: "System essentials";
+                            color: #FFFFFF;
+                            font-size: 15px;
+                            font-weight: 700;
+                        }
+
+                        TweakRow {
+                            title: "Vendor-agnostic userspace (mesa + vulkan loader + firmware)";
+                            subtitle: "Installs the Vulkan loader + vendor ICDs (RADV / ANV), Mesa GL, split firmware (linux-firmware-amdgpu / linux-firmware-intel — carved out of linux-firmware in 2025), VA-API drivers (gen-gated on Intel), and diagnostic userspace (vulkan-tools, clinfo, libva-utils, vdpauinfo). Non-gaming baseline — run before `--apply-gaming`.";
+                            checked <=> root.opt-essentials;
+                            enabled: !root.is-working;
+                            applied: root.state-essentials-applied;
+                            pending_reboot: false;
+                            incompatible: false;
+                        }
+
+                        Rectangle { height: 1px; background: #333333; }
+
+                        TweakRow {
+                            title: "Add user to video + render groups";
+                            subtitle: "`video` gates /dev/dri/card* (mode-set + GL). `render` gates /dev/dri/renderD* (compute, VA-API, some Vulkan). logind auto-grants `video` for the seat owner but NOT `render` — missing render is the silent cause of VA-API falling back to software decode. Re-login (not reboot) required to activate.";
+                            checked <=> root.opt-groups;
+                            enabled: !root.is-working;
+                            applied: root.state-groups-applied;
+                            pending_reboot: false;
+                            incompatible: root.state-groups-incompatible;
+                        }
+                    }
+
+                    // ── Smart troubleshoot card (Phase 29) ─────────────────────────────
+                    Card {
+                        Text {
+                            text: "Smart troubleshoot";
+                            color: #FFFFFF;
+                            font-size: 15px;
+                            font-weight: 700;
+                        }
+                        Text {
+                            text: "Runs each registered Recipe through detect → cause → fix → verify. Initial recipes: nomodeset_stuck, nouveau_active_with_nvidia, dangling_vulkan_icd, software_rendering (diagnostic-only). With Dry-run ON, the card only detects and explains — no writes.";
+                            color: #A0A0A0;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+
+                        TweakRow {
+                            title: "Run troubleshoot recipes";
+                            subtitle: "Each matching recipe explains the symptom, attempts a fix (if safe), and re-probes live state. Outcomes — ✓ live-verified, ⟳ reboot required, ✗ fix attempted but verify failed — stream into the console.";
+                            checked <=> root.opt-troubleshoot;
+                            enabled: !root.is-working;
+                            applied: false;
+                            pending_reboot: false;
+                            incompatible: false;
+                        }
+                    }
+
+                    // ── Reverse cleanup card (Phase 28) — destructive ──────────────────
+                    // Segregated with an amber tint + explicit warning header so users
+                    // don't confuse it with the other Apply-style tweaks. The existing
+                    // `opt-dry-run` toggle IS the preview mechanism — the subtitle
+                    // reinforces that "Keep Dry-run ON for your first run" is the
+                    // intended workflow.
+                    Rectangle {
+                        background: #3C2A1A;
+                        border-radius: 12px;
+                        border-width: 1px;
+                        border-color: #8A5A20;
+
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 10px;
+
+                            HorizontalLayout {
+                                spacing: 10px;
+                                alignment: start;
+                                Text {
+                                    text: "⚠";
+                                    color: #FFC66E;
+                                    font-size: 18px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "Reverse cleanup  ·  destructive";
+                                    color: #FFC66E;
+                                    font-size: 15px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Text {
+                                text: "Removes packages that don't belong on this host: cross-vendor driver leftovers (e.g. nvidia-utils on an Intel-only box), legacy Xorg DDX (xf86-video-intel / -amdgpu / -ati), defunct packages (mesa-vdpau / libva-mesa-driver — Mesa 26 bundles VA-API in-tree), and AMDVLK when RADV is also installed. Writes a full pacman -Qq snapshot to /var/backups/archgpu/pre-cleanup-<ts>.txt before any removal — restore with `pacman -S --needed - < <snapshot>`.";
+                                color: #E8D4B0;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: "⚡  Keep Dry-run ON for your first run — the card will list every candidate with its reason in the console before you disable dry-run and apply.";
+                                color: #FFC66E;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+
+                            TweakRow {
+                                title: "Remove hardware-absent + legacy + defunct packages";
+                                subtitle: "Auto-Optimize never enables this toggle — cleanup is always an explicit user decision. Toggle on, inspect the plan in Dry-run, then turn Dry-run off to actually remove.";
+                                checked <=> root.opt-cleanup;
+                                enabled: !root.is-working;
+                                applied: root.state-cleanup-applied;
+                                pending_reboot: false;
+                                incompatible: false;
                             }
                         }
                     }

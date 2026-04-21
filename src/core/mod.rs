@@ -1,10 +1,13 @@
 pub mod aur;
 pub mod auto;
 pub mod bootloader;
+pub mod cleanup;
 pub mod cpu;
 pub mod diagnostics;
+pub mod essentials;
 pub mod gaming;
 pub mod gpu;
+pub mod groups;
 pub mod hardware;
 pub mod nvidia;
 pub mod power;
@@ -12,6 +15,7 @@ pub mod prime;
 pub mod rendering;
 pub mod repair;
 pub mod state;
+pub mod troubleshoot;
 pub mod wayland;
 
 #[cfg(test)]
@@ -59,6 +63,9 @@ pub struct SystemPaths {
     // <sys_module>/<module>/ directory means the kernel module isn't loaded, which is the
     // same signal as "module loaded but parameter reports wrong value" for our purposes.
     pub sys_module: PathBuf,
+    // Phase 27: `/etc/group` — authoritative static group membership (the file logind
+    // dynamic-seat membership LAYERS on top of, not a replacement for).
+    pub group_file: PathBuf,
     // Phase 11: multi-bootloader paths
     pub grub_default: PathBuf,
     pub grub_cfg: PathBuf,
@@ -87,6 +94,7 @@ impl SystemPaths {
             vulkan_icd_dir: PathBuf::from("/usr/share/vulkan/icd.d"),
             backup_dir: PathBuf::from("/var/backups/archgpu"),
             sys_module: PathBuf::from("/sys/module"),
+            group_file: PathBuf::from("/etc/group"),
             grub_default: PathBuf::from("/etc/default/grub"),
             grub_cfg: PathBuf::from("/boot/grub/grub.cfg"),
             sdb_loader_conf: PathBuf::from("/boot/loader/loader.conf"),
@@ -121,6 +129,7 @@ impl SystemPaths {
             vulkan_icd_dir: root.join("usr/share/vulkan/icd.d"),
             backup_dir: root.join("var/backups/archgpu"),
             sys_module: root.join("sys/module"),
+            group_file: root.join("etc/group"),
             grub_default: root.join("etc/default/grub"),
             grub_cfg: root.join("boot/grub/grub.cfg"),
             sdb_loader_conf: root.join("boot/loader/loader.conf"),
@@ -171,9 +180,31 @@ pub struct Actions {
     /// failed to build. Runs BEFORE the other actions so their state probes see a
     /// clean system. Idempotent — on a healthy host it's a no-op.
     pub repair: bool,
+    /// Phase 26: vendor-agnostic userspace baseline — Vulkan loader, Mesa GL, split
+    /// firmware packages (`linux-firmware-amdgpu` / `linux-firmware-intel`), VA-API
+    /// drivers, diagnostic tools (vulkan-tools / clinfo / libva-utils / vdpauinfo).
+    /// Non-gaming; runs before `gaming` so that stack sees a healthy base.
+    pub essentials: bool,
+    /// Phase 27: ensure the invoking user is a member of `video` + `render` via
+    /// `usermod -aG`. Requires a re-login (not a reboot) to take effect in the
+    /// current session — surfaced in the apply-time detail message.
+    pub groups: bool,
+    /// Phase 28: reverse cleanup — removes hardware-absent vendor packages, defunct
+    /// (Mesa-2026-bundled) packages, legacy Xorg DDX drivers, and AMDVLK-when-RADV
+    /// conflicts. **Opt-in only**: not in `Actions::all()` and not surfaced by
+    /// `auto::recommend`. Always writes a pre-cleanup snapshot before removing.
+    pub cleanup: bool,
+    /// Phase 29: smart troubleshoot loop. Runs each registered Recipe through its
+    /// detect → fix → verify cycle. Opt-in only (not in `Actions::all()`, not in
+    /// `auto::recommend`) — the recipes spawn external probes (glxinfo,
+    /// vulkaninfo, mkinitcpio) that are too expensive for an unprompted run.
+    pub troubleshoot: bool,
 }
 
 impl Actions {
+    /// Phase 28+29 invariant: `cleanup` and `troubleshoot` are NOT in `all()`.
+    /// `--apply-all` must remain a safe-to-invoke fast path — cleanup is destructive
+    /// and troubleshoot fans out to subprocess probes that take noticeable time.
     pub fn all() -> Self {
         Self {
             wayland: true,
@@ -181,11 +212,23 @@ impl Actions {
             power: true,
             gaming: true,
             repair: true,
+            essentials: true,
+            groups: true,
+            cleanup: false,
+            troubleshoot: false,
         }
     }
 
     pub fn any(&self) -> bool {
-        self.wayland || self.bootloader || self.power || self.gaming || self.repair
+        self.wayland
+            || self.bootloader
+            || self.power
+            || self.gaming
+            || self.repair
+            || self.essentials
+            || self.groups
+            || self.cleanup
+            || self.troubleshoot
     }
 }
 
@@ -209,6 +252,23 @@ pub fn run_actions(
     if actions.repair {
         for r in repair::apply(ctx, gpus, form, assume_yes, progress)? {
             out.push(("repair", r));
+        }
+    }
+
+    // Phase 27: group provisioning runs first after repair — cheap user-state
+    // cleanup before pacman-heavy stages.
+    if actions.groups {
+        for r in groups::apply(ctx, assume_yes, progress)? {
+            out.push(("groups", r));
+        }
+    }
+
+    // Phase 26: essentials runs before gaming/wayland/bootloader/power so the Vulkan
+    // loader, Mesa, split firmware, and diagnostic tools are present by the time
+    // later stages run their state probes. Universally applicable.
+    if actions.essentials {
+        for r in essentials::apply(ctx, gpus, assume_yes, progress)? {
+            out.push(("essentials", r));
         }
     }
 
@@ -246,6 +306,22 @@ pub fn run_actions(
     if actions.gaming {
         for r in gaming::apply(ctx, gpus, form, assume_yes, progress)? {
             out.push(("gaming", r));
+        }
+    }
+    // Phase 28: cleanup runs after vendor stages so essentials/gaming have
+    // installed the packages they want first; cleanup then removes the
+    // leftovers that don't belong on this host.
+    if actions.cleanup {
+        for r in cleanup::apply(ctx, gpus, assume_yes, progress)? {
+            out.push(("cleanup", r));
+        }
+    }
+    // Phase 29: troubleshoot runs LAST so every prior converge stage (including
+    // cleanup) has had a chance to fix what it can before recipes probe live
+    // state. Recipes that DON'T match (the healthy-box common case) are no-ops.
+    if actions.troubleshoot {
+        for r in troubleshoot::apply(ctx, gpus, assume_yes, progress)? {
+            out.push(("troubleshoot", r));
         }
     }
     Ok(out)
